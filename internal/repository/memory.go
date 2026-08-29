@@ -7,7 +7,7 @@ import (
 )
 
 type MemStorage struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	Gauges   map[string]float64
 	Counters map[string]int64
 }
@@ -33,8 +33,8 @@ func (s *MemStorage) Update(metric *models.Metrics) error {
 }
 
 func (s *MemStorage) ListGuages() map[string]float64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	// Create a copy of the Gauges map to avoid exposing internal state
 	gaugesCopy := make(map[string]float64)
@@ -46,8 +46,8 @@ func (s *MemStorage) ListGuages() map[string]float64 {
 }
 
 func (s *MemStorage) ListCounters() map[string]int64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	// Create a copy of the Counters map to avoid exposing internal state
 	countersCopy := make(map[string]int64)

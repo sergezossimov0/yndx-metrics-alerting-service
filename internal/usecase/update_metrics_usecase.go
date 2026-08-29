@@ -22,6 +22,7 @@ func (mu *MetricUpdate) UpdateMetric(metric *models.Metrics) error {
 	if err := mu.store.Update(metric); err != nil {
 		return err
 	}
+	mu.Print()
 	return nil
 }
 
