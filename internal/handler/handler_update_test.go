@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/usecase"
 )
@@ -13,7 +14,11 @@ import (
 func newTestHandler() (http.Handler, *repository.MemStorage) {
 	store := repository.NewMemStorage()
 	uc := usecase.NewMetricUpdate(store)
-	return UpdateMetricsHandler(&uc), store
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", UpdateMetricsHandler(&uc))
+	r.Get("/value/{type}/{name}", GetMetricValueHandler(store))
+	r.Get("/", ListMetricsHandler(store))
+	return r, store
 }
 
 func TestUpdateMetricsHandler_SuccessGauge(t *testing.T) {
@@ -78,7 +83,7 @@ func TestUpdateMetricsHandler_Errors(t *testing.T) {
 			method:      http.MethodGet,
 			target:      "/update/gauge/Alloc/1",
 			contentType: "text/plain",
-			expected:    http.StatusNotFound,
+			expected:    http.StatusMethodNotAllowed,
 		},
 		{
 			name:        "invalid content type",
@@ -99,7 +104,7 @@ func TestUpdateMetricsHandler_Errors(t *testing.T) {
 			method:      http.MethodPost,
 			target:      "/update/gauge/Alloc/",
 			contentType: "text/plain",
-			expected:    http.StatusBadRequest,
+			expected:    http.StatusNotFound,
 		},
 		{
 			name:        "invalid metric type",

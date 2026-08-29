@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 )
 
@@ -21,28 +22,27 @@ type MetricUpdater interface {
 
 func UpdateMetricsHandler(updater MetricUpdater) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-
 		if !strings.HasPrefix(r.Header.Get("Content-Type"), "text/plain") {
 			http.Error(w, "invalid content type", http.StatusBadRequest)
 			return
 		}
 
-		metricRequest, err := parseUpdatePath(r.URL.Path)
-		if err != nil {
-			switch {
-			case errors.Is(err, errMetricNameMissing):
-				http.NotFound(w, r)
-			default:
-				http.Error(w, err.Error(), http.StatusBadRequest)
-			}
+		metricType := chi.URLParam(r, "type")
+		metricName := chi.URLParam(r, "name")
+		metricValue := chi.URLParam(r, "value")
+
+		if metricName == "" {
+			http.NotFound(w, r)
 			return
 		}
 
-		metricModel, errConvert := validateMetric(metricRequest)
+		metricRequest := &metricRequest{Type: metricType, Name: metricName, Value: metricValue}
+		if err := validateMetricRequest(metricRequest); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		metricModel, errConvert := convertMetric(metricRequest)
 		if errConvert != nil {
 			http.Error(w, errConvert.Error(), http.StatusBadRequest)
 			return
@@ -59,7 +59,17 @@ func UpdateMetricsHandler(updater MetricUpdater) http.HandlerFunc {
 	}
 }
 
-func validateMetric(mr *metricRequest) (*models.Metrics, error) {
+func validateMetricRequest(mr *metricRequest) error {
+	if mr.Type == "" {
+		return errMetricTypeMissing
+	}
+	if mr.Value == "" {
+		return errMetricValueMissing
+	}
+	return nil
+}
+
+func convertMetric(mr *metricRequest) (*models.Metrics, error) {
 	switch mr.Type {
 	case "gauge":
 		convValue, err := strconv.ParseFloat(mr.Value, 64)
@@ -87,46 +97,6 @@ func validateMetric(mr *metricRequest) (*models.Metrics, error) {
 }
 
 var (
-	errMetricNameMissing  = errors.New("metric name is missing")
-	errBadPathFormat      = errors.New("bad path format")
 	errMetricValueMissing = errors.New("metric value is missing")
 	errMetricTypeMissing  = errors.New("metric type is missing")
 )
-
-// Expected path: /update/{type}/{name}/{value}
-func parseUpdatePath(path string) (metric *metricRequest, err error) {
-	if !strings.HasPrefix(path, "/update/") {
-		return nil, errBadPathFormat
-	}
-
-	rest := strings.TrimPrefix(path, "/update/")
-	parts := strings.Split(rest, "/")
-
-	if len(parts) != 3 {
-		return nil, errBadPathFormat
-	}
-
-	metricType := parts[0]
-	metricName := parts[1]
-	metricValue := parts[2]
-
-	if metricType == "" {
-		return nil, errMetricTypeMissing
-	}
-
-	if metricName == "" {
-		return nil, errMetricNameMissing
-	}
-
-	if metricValue == "" {
-		return nil, errMetricValueMissing
-	}
-
-	m := &metricRequest{
-		Type:  metricType,
-		Name:  metricName,
-		Value: metricValue,
-	}
-
-	return m, nil
-}
