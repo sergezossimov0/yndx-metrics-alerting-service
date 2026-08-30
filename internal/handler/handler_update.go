@@ -22,7 +22,8 @@ type MetricUpdater interface {
 
 func UpdateMetricsHandler(updater MetricUpdater) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.Header.Get("Content-Type"), "text/plain") {
+		contentType := r.Header.Get("Content-Type")
+		if contentType != "" && !strings.HasPrefix(contentType, "text/plain") {
 			http.Error(w, "invalid content type", http.StatusBadRequest)
 			return
 		}
