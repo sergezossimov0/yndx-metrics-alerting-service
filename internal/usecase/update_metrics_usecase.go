@@ -28,7 +28,7 @@ func (mu *MetricUpdate) UpdateMetric(metric *models.Metrics) error {
 
 func (mu *MetricUpdate) Print() {
 	log.Println("Current Metrics State:")
-	for k, v := range mu.store.ListGuages() {
+	for k, v := range mu.store.ListGauges() {
 		//log.Println(k, v)
 		println("gauge:", k, ", value:", v)
 	}

@@ -6,6 +6,6 @@ import (
 
 type UpdateMetricStore interface {
 	Update(metric *models.Metrics) error
-	ListGuages() map[string]float64
+	ListGauges() map[string]float64
 	ListCounters() map[string]int64
 }

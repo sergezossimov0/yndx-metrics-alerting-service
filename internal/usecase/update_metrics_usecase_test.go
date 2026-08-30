@@ -19,7 +19,7 @@ func (m *mockUpdateMetricStore) Update(metric *models.Metrics) error {
 	return m.updateErr
 }
 
-func (m *mockUpdateMetricStore) ListGuages() map[string]float64 {
+func (m *mockUpdateMetricStore) ListGauges() map[string]float64 {
 	m.listGaugesCalled++
 	return map[string]float64{"Alloc": 123.45}
 }

@@ -32,7 +32,7 @@ func (s *MemStorage) Update(metric *models.Metrics) error {
 	return nil
 }
 
-func (s *MemStorage) ListGuages() map[string]float64 {
+func (s *MemStorage) ListGauges() map[string]float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

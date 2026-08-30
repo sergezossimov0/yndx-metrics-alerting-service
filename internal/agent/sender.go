@@ -127,7 +127,7 @@ func (a *Agent) sendMetric(metricType, name, value string) error {
 }
 
 func (a *Agent) reportOnce() {
-	gauges := a.store.ListGuages()
+	gauges := a.store.ListGauges()
 	counters := a.store.ListCounters()
 
 	for name, value := range gauges {

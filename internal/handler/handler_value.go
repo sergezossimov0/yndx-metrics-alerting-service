@@ -11,7 +11,7 @@ import (
 )
 
 type MetricReader interface {
-	ListGuages() map[string]float64
+	ListGauges() map[string]float64
 	ListCounters() map[string]int64
 }
 
@@ -29,7 +29,7 @@ func GetMetricValueHandler(store MetricReader) http.HandlerFunc {
 
 		switch metricType {
 		case models.Gauge:
-			value, ok := store.ListGuages()[metricName]
+			value, ok := store.ListGauges()[metricName]
 			if !ok {
 				http.NotFound(w, r)
 				return
@@ -52,7 +52,7 @@ func ListMetricsHandler(store MetricReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-		gauges := store.ListGuages()
+		gauges := store.ListGauges()
 		counters := store.ListCounters()
 
 		gaugeNames := make([]string, 0, len(gauges))

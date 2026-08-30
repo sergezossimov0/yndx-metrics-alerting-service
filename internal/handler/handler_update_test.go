@@ -39,7 +39,7 @@ func TestUpdateMetricsHandler_SuccessGauge(t *testing.T) {
 		t.Fatalf("expected body OK, got %q", string(body))
 	}
 
-	gauges := store.ListGuages()
+	gauges := store.ListGauges()
 	if got := gauges["Alloc"]; got != 123.45 {
 		t.Fatalf("expected gauge Alloc=123.45, got %v", got)
 	}

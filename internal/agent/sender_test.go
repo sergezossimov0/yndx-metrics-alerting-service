@@ -33,7 +33,7 @@ func TestCollectOnceStoresMetrics(t *testing.T) {
 	a.collectOnce()
 	a.collectOnce()
 
-	gauges := a.store.ListGuages()
+	gauges := a.store.ListGauges()
 	counters := a.store.ListCounters()
 
 	if _, ok := gauges["Alloc"]; !ok {
