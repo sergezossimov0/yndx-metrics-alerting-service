@@ -7,30 +7,18 @@ import (
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 )
 
-type mockUpdateMetricStore struct {
-	updateErr        error
-	updateCalled     int
-	listGaugesCalled int
-	listCountCalled  int
+type updateMetricStoreMock struct {
+	updateErr    error
+	updateCalled int
 }
 
-func (m *mockUpdateMetricStore) Update(metric *models.Metrics) error {
+func (m *updateMetricStoreMock) Update(metric *models.Metrics) error {
 	m.updateCalled++
 	return m.updateErr
 }
 
-func (m *mockUpdateMetricStore) ListGauges() map[string]float64 {
-	m.listGaugesCalled++
-	return map[string]float64{"Alloc": 123.45}
-}
-
-func (m *mockUpdateMetricStore) ListCounters() map[string]int64 {
-	m.listCountCalled++
-	return map[string]int64{"PollCount": 7}
-}
-
-func TestMetricUpdate_UpdateMetric_Success(t *testing.T) {
-	store := &mockUpdateMetricStore{}
+func TestMetricUpdate_UpdateMetric_CallsStoreUpdate(t *testing.T) {
+	store := &updateMetricStoreMock{}
 	uc := NewMetricUpdate(store)
 
 	g := 1.5
@@ -43,15 +31,11 @@ func TestMetricUpdate_UpdateMetric_Success(t *testing.T) {
 	if store.updateCalled != 1 {
 		t.Fatalf("expected Update to be called once, got %d", store.updateCalled)
 	}
-
-	if store.listGaugesCalled == 0 || store.listCountCalled == 0 {
-		t.Fatalf("expected Print() to call both list methods, got gauges=%d counters=%d", store.listGaugesCalled, store.listCountCalled)
-	}
 }
 
-func TestMetricUpdate_UpdateMetric_Error(t *testing.T) {
+func TestMetricUpdate_UpdateMetric_ReturnsStoreError(t *testing.T) {
 	expectedErr := errors.New("update failed")
-	store := &mockUpdateMetricStore{updateErr: expectedErr}
+	store := &updateMetricStoreMock{updateErr: expectedErr}
 	uc := NewMetricUpdate(store)
 
 	g := 1.5
@@ -65,18 +49,4 @@ func TestMetricUpdate_UpdateMetric_Error(t *testing.T) {
 		t.Fatalf("expected error %v, got %v", expectedErr, err)
 	}
 
-	if store.listGaugesCalled != 0 || store.listCountCalled != 0 {
-		t.Fatalf("expected Print() not to run on update error, got gauges=%d counters=%d", store.listGaugesCalled, store.listCountCalled)
-	}
-}
-
-func TestMetricUpdate_Print(t *testing.T) {
-	store := &mockUpdateMetricStore{}
-	uc := NewMetricUpdate(store)
-
-	uc.Print()
-
-	if store.listGaugesCalled != 1 || store.listCountCalled != 1 {
-		t.Fatalf("expected one read from both maps, got gauges=%d counters=%d", store.listGaugesCalled, store.listCountCalled)
-	}
 }

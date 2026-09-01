@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/rand"
@@ -12,20 +13,25 @@ import (
 	"time"
 
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
-	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
 )
 
+type metricStore interface {
+	Update(metric *models.Metrics) error
+	ListGauges() map[string]float64
+	ListCounters() map[string]int64
+}
+
 type Agent struct {
-	store          *repository.MemStorage
+	store          metricStore
 	serverAddr     string
 	pollInterval   time.Duration
 	reportInterval time.Duration
 	client         *http.Client
 }
 
-func NewAgent(serverAddr string, pollSec, reportSec int) *Agent {
+func NewAgent(serverAddr string, pollSec, reportSec int, storage metricStore) *Agent {
 	return &Agent{
-		store:          repository.NewMemStorage(),
+		store:          storage,
 		serverAddr:     serverAddr,
 		pollInterval:   time.Duration(pollSec) * time.Second,
 		reportInterval: time.Duration(reportSec) * time.Second,
@@ -142,7 +148,7 @@ func (a *Agent) reportOnce() {
 	}
 }
 
-func (a *Agent) Run() {
+func (a *Agent) Run(ctx context.Context) {
 	pollTicker := time.NewTicker(a.pollInterval)
 	reportTicker := time.NewTicker(a.reportInterval)
 	defer pollTicker.Stop()
@@ -153,6 +159,8 @@ func (a *Agent) Run() {
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-pollTicker.C:
 			a.collectOnce()
 		case <-reportTicker.C:

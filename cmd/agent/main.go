@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/agent"
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
 )
 
 func main() {
@@ -34,8 +36,10 @@ func main() {
 
 	baseURL := normalizeServerAddr(*serverAddr)
 	log.Printf("agent starting with addr=%s poll_interval=%ds report_interval=%ds", baseURL, *pollInterval, *reportInterval)
-	newAgent := agent.NewAgent(baseURL, *pollInterval, *reportInterval)
-	newAgent.Run()
+
+	storage := repository.NewMemStorage()
+	newAgent := agent.NewAgent(baseURL, *pollInterval, *reportInterval, storage)
+	newAgent.Run(context.Background())
 }
 
 func normalizeHelpArg(args []string) []string {

@@ -40,11 +40,12 @@ func run() error {
 
 	store := repository.NewMemStorage()
 	uc := usecase.NewMetricUpdate(store)
+	readUC := usecase.NewMetricRead(store)
 	r := chi.NewRouter()
 
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetricsHandler(&uc))
-	r.Get("/value/{type}/{name}", handler.GetMetricValueHandler(store))
-	r.Get("/", handler.ListMetricsHandler(store))
+	r.Get("/value/{type}/{name}", handler.GetMetricValueHandler(&readUC))
+	r.Get("/", handler.ListMetricsHandler(&readUC))
 
 	log.Printf("server starting on addr=%s", *serverAddr)
 	return http.ListenAndServe(*serverAddr, r)

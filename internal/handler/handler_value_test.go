@@ -1,13 +1,25 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 )
+
+// emptyMetricReaderStub satisfies MetricReader without ever being called;
+// it exists only to exercise the metricName=="" short-circuit, which chi's
+// routing never lets a real request reach.
+type emptyMetricReaderStub struct{}
+
+func (emptyMetricReaderStub) GetGauge(string) (float64, bool) { return 0, false }
+func (emptyMetricReaderStub) GetCounter(string) (int64, bool) { return 0, false }
+func (emptyMetricReaderStub) ListGauges() map[string]float64  { return nil }
+func (emptyMetricReaderStub) ListCounters() map[string]int64  { return nil }
 
 func TestGetMetricValueHandler(t *testing.T) {
 	h, store := newTestHandler()
@@ -43,8 +55,18 @@ func TestGetMetricValueHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown metric", func(t *testing.T) {
+	t.Run("unknown gauge metric", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/value/gauge/Unknown", nil)
+		res := httptest.NewRecorder()
+		h.ServeHTTP(res, req)
+
+		if res.Code != http.StatusNotFound {
+			t.Fatalf("expected status %d, got %d", http.StatusNotFound, res.Code)
+		}
+	})
+
+	t.Run("unknown counter metric", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/value/counter/Unknown", nil)
 		res := httptest.NewRecorder()
 		h.ServeHTTP(res, req)
 
@@ -62,6 +84,23 @@ func TestGetMetricValueHandler(t *testing.T) {
 			t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
 		}
 	})
+}
+
+func TestGetMetricValueHandler_MissingMetricNameReturnsNotFound(t *testing.T) {
+	handlerFunc := GetMetricValueHandler(emptyMetricReaderStub{})
+
+	req := httptest.NewRequest(http.MethodGet, "/value/gauge/", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("type", "gauge")
+	rctx.URLParams.Add("name", "")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	res := httptest.NewRecorder()
+	handlerFunc(res, req)
+
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, res.Code)
+	}
 }
 
 func TestListMetricsHandler(t *testing.T) {

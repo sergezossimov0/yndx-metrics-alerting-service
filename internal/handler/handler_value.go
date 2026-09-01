@@ -11,11 +11,13 @@ import (
 )
 
 type MetricReader interface {
+	GetGauge(name string) (float64, bool)
+	GetCounter(name string) (int64, bool)
 	ListGauges() map[string]float64
 	ListCounters() map[string]int64
 }
 
-func GetMetricValueHandler(store MetricReader) http.HandlerFunc {
+func GetMetricValueHandler(reader MetricReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		metricType := chi.URLParam(r, "type")
 		metricName := chi.URLParam(r, "name")
@@ -29,14 +31,14 @@ func GetMetricValueHandler(store MetricReader) http.HandlerFunc {
 
 		switch metricType {
 		case models.Gauge:
-			value, ok := store.ListGauges()[metricName]
+			value, ok := reader.GetGauge(metricName)
 			if !ok {
 				http.NotFound(w, r)
 				return
 			}
 			_, _ = w.Write([]byte(strconv.FormatFloat(value, 'f', -1, 64)))
 		case models.Counter:
-			value, ok := store.ListCounters()[metricName]
+			value, ok := reader.GetCounter(metricName)
 			if !ok {
 				http.NotFound(w, r)
 				return
@@ -48,12 +50,12 @@ func GetMetricValueHandler(store MetricReader) http.HandlerFunc {
 	}
 }
 
-func ListMetricsHandler(store MetricReader) http.HandlerFunc {
+func ListMetricsHandler(reader MetricReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-		gauges := store.ListGauges()
-		counters := store.ListCounters()
+		gauges := reader.ListGauges()
+		counters := reader.ListCounters()
 
 		gaugeNames := make([]string, 0, len(gauges))
 		for name := range gauges {

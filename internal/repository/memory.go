@@ -57,3 +57,19 @@ func (s *MemStorage) ListCounters() map[string]int64 {
 
 	return countersCopy
 }
+
+func (s *MemStorage) GetGauge(name string) (float64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	v, ok := s.Gauges[name]
+	return v, ok
+}
+
+func (s *MemStorage) GetCounter(name string) (int64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	v, ok := s.Counters[name]
+	return v, ok
+}
