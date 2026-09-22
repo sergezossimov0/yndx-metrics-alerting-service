@@ -25,16 +25,9 @@ func main() {
 }
 
 func run() error {
-	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "Server startup options:")
-		fs.PrintDefaults()
-	}
 
-	serverAddr := fs.String("a", "localhost:8080", "HTTP server address")
-	if err := fs.Parse(normalizeHelpArg(os.Args[1:])); err != nil {
+	serverAddr, err := resolveServerAddr()
+	if err != nil {
 		return err
 	}
 
@@ -47,8 +40,8 @@ func run() error {
 	r.Get("/value/{type}/{name}", handler.GetMetricValueHandler(&readUC))
 	r.Get("/", handler.ListMetricsHandler(&readUC))
 
-	log.Printf("server starting on addr=%s", *serverAddr)
-	return http.ListenAndServe(*serverAddr, r)
+	log.Printf("server starting on addr=%s", serverAddr)
+	return http.ListenAndServe(serverAddr, r)
 }
 
 func normalizeHelpArg(args []string) []string {
@@ -60,4 +53,27 @@ func normalizeHelpArg(args []string) []string {
 		}
 	}
 	return normalized
+}
+
+func resolveServerAddr() (string, error) {
+	// environment variable takes precedence over command line argument
+	if envServerAddr := os.Getenv("ADDRESS"); envServerAddr != "" {
+		return envServerAddr, nil
+	}
+
+	// parse command line argument
+	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "Server startup options:")
+		fs.PrintDefaults()
+	}
+
+	serverAddr := fs.String("a", "localhost:8080", "HTTP server address")
+	if err := fs.Parse(normalizeHelpArg(os.Args[1:])); err != nil {
+		return "", err
+	}
+
+	return *serverAddr, nil
 }
