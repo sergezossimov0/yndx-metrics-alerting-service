@@ -102,3 +102,36 @@ func TestResolveServerAddr_EmptyEnvVarTreatedAsUnset(t *testing.T) {
 		t.Fatalf("expected %q, got %q", "localhost:1234", got)
 	}
 }
+
+func TestResolveLogLevel_UsesEnvVarWhenSet(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "debug")
+
+	got := resolveLogLevel()
+	if got != "debug" {
+		t.Fatalf("expected %q, got %q", "debug", got)
+	}
+}
+
+func TestResolveLogLevel_UsesDefaultWhenEnvNotSet(t *testing.T) {
+	orig, wasSet := os.LookupEnv("LOG_LEVEL")
+	os.Unsetenv("LOG_LEVEL")
+	t.Cleanup(func() {
+		if wasSet {
+			os.Setenv("LOG_LEVEL", orig)
+		}
+	})
+
+	got := resolveLogLevel()
+	if got != "INFO" {
+		t.Fatalf("expected %q, got %q", "INFO", got)
+	}
+}
+
+func TestResolveLogLevel_EmptyEnvVarTreatedAsUnset(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "")
+
+	got := resolveLogLevel()
+	if got != "INFO" {
+		t.Fatalf("expected %q, got %q", "INFO", got)
+	}
+}

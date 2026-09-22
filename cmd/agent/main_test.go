@@ -193,3 +193,30 @@ func TestResolveConfig_ZeroReportIntervalEnvIsOverriddenByFlagDefault(t *testing
 		t.Fatalf("expected reportInterval to fall back to flag default 10, got %d", got.reportInterval)
 	}
 }
+
+func TestResolveLogLevel_UsesEnvVarWhenSet(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "debug")
+
+	got := resolveLogLevel()
+	if got != "debug" {
+		t.Fatalf("expected %q, got %q", "debug", got)
+	}
+}
+
+func TestResolveLogLevel_UsesDefaultWhenEnvNotSet(t *testing.T) {
+	unsetEnv(t, "LOG_LEVEL")
+
+	got := resolveLogLevel()
+	if got != "INFO" {
+		t.Fatalf("expected %q, got %q", "INFO", got)
+	}
+}
+
+func TestResolveLogLevel_EmptyEnvVarTreatedAsUnset(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "")
+
+	got := resolveLogLevel()
+	if got != "INFO" {
+		t.Fatalf("expected %q, got %q", "INFO", got)
+	}
+}

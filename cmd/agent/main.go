@@ -5,13 +5,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/agent"
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
+	"go.uber.org/zap"
 )
 
 type config struct {
@@ -30,8 +31,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := logger.Initialize(resolveLogLevel()); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer logger.Log.Sync()
+
 	baseURL := normalizeServerAddr(cfg.serverAddress)
-	log.Printf("agent starting with addr=%s poll_interval=%ds report_interval=%ds", baseURL, cfg.pollInterval, cfg.reportInterval)
+	logger.Log.Info("agent starting",
+		zap.String("address", baseURL),
+		zap.Int("poll_interval", cfg.pollInterval),
+		zap.Int("report_interval", cfg.reportInterval),
+	)
 
 	storage := repository.NewMemStorage()
 	newAgent := agent.NewAgent(baseURL, cfg.pollInterval, cfg.reportInterval, storage)
@@ -109,6 +120,13 @@ func normalizeHelpArg(args []string) []string {
 		}
 	}
 	return normalized
+}
+
+func resolveLogLevel() string {
+	if envLogLevel := os.Getenv("LOG_LEVEL"); envLogLevel != "" {
+		return envLogLevel
+	}
+	return "INFO"
 }
 
 func normalizeServerAddr(addr string) string {

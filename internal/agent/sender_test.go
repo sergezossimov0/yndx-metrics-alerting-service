@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,8 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // metricStoreMock lets tests force Update to fail, which the real
@@ -38,13 +40,15 @@ func (m *metricStoreMock) ListCounters() map[string]int64 {
 	return m.counters
 }
 
-// captureLogOutput redirects the standard logger into a buffer for the
+// captureLogOutput redirects the package logger into a buffer for the
 // duration of fn and returns everything it wrote.
 func captureLogOutput(fn func()) string {
 	var buf bytes.Buffer
-	orig := log.Writer()
-	log.SetOutput(&buf)
-	defer log.SetOutput(orig)
+	core := zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), zapcore.AddSync(&buf), zapcore.DebugLevel)
+
+	orig := logger.Log
+	logger.Log = zap.New(core)
+	defer func() { logger.Log = orig }()
 
 	fn()
 

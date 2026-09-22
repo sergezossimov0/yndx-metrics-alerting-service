@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -12,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
+	"go.uber.org/zap"
 )
 
 type metricStore interface {
@@ -79,13 +80,13 @@ func (a *Agent) collectOnce() {
 	for name, value := range metrics {
 		gaugeValue := value
 		if err := a.store.Update(&models.Metrics{ID: name, MType: models.Gauge, Value: &gaugeValue}); err != nil {
-			log.Printf("collect gauge error for %s: %v", name, err)
+			logger.Log.Error("collect gauge error", zap.String("metric", name), zap.Error(err))
 		}
 	}
 
 	pollInc := int64(1)
 	if err := a.store.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &pollInc}); err != nil {
-		log.Printf("collect counter error for PollCount: %v", err)
+		logger.Log.Error("collect counter error", zap.String("metric", "PollCount"), zap.Error(err))
 	}
 }
 
@@ -122,7 +123,7 @@ func (a *Agent) sendMetric(metricType, name, value string) error {
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			log.Printf("close response body error: %v", closeErr)
+			logger.Log.Error("close response body error", zap.Error(closeErr))
 		}
 	}()
 
@@ -138,12 +139,12 @@ func (a *Agent) reportOnce() {
 
 	for name, value := range gauges {
 		if err := a.sendMetric(models.Gauge, name, strconv.FormatFloat(value, 'f', -1, 64)); err != nil {
-			log.Printf("send gauge error: %v", err)
+			logger.Log.Error("send gauge error", zap.String("metric", name), zap.Error(err))
 		}
 	}
 	for name, value := range counters {
 		if err := a.sendMetric(models.Counter, name, strconv.FormatInt(value, 10)); err != nil {
-			log.Printf("send counter error: %v", err)
+			logger.Log.Error("send counter error", zap.String("metric", name), zap.Error(err))
 		}
 	}
 }
