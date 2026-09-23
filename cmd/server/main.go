@@ -26,7 +26,6 @@ func main() {
 }
 
 func run() error {
-
 	serverAddr, err := resolveServerAddr()
 	if err != nil {
 		return err
@@ -42,8 +41,8 @@ func run() error {
 	readUC := usecase.NewMetricRead(store)
 	r := chi.NewRouter()
 
-	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetricsHandler(&uc))
-	r.Get("/value/{type}/{name}", handler.GetMetricValueHandler(&readUC))
+	r.Post("/update/", handler.UpdateMetricsJsonHandler(&uc))
+	r.Post("/value/", handler.GetMetricValueJsonHandler(&readUC))
 	r.Get("/", handler.ListMetricsHandler(&readUC))
 
 	logger.Log.Info("Running server", zap.String("address", serverAddr))

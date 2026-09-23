@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -55,40 +56,61 @@ func captureLogOutput(fn func()) string {
 	return buf.String()
 }
 
-func TestBuildUpdateURL_EscapesPathSegments(t *testing.T) {
-	metricURL, err := buildUpdateURL("http://localhost:8080", models.Gauge, "Heap/Alloc Value", "12.5")
-	if err != nil {
+func TestSendMetricJson_SendsCorrectRequest(t *testing.T) {
+	var gotMethod, gotPath, gotContentType string
+	var gotBody models.Metrics
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotContentType = r.Header.Get("Content-Type")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	a := NewAgent(ts.URL, 2, 10, repository.NewMemStorage())
+
+	value := 12.5
+	if err := a.sendMetricJson(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(metricURL, "/update/gauge/") {
-		t.Fatalf("expected update path, got %s", metricURL)
+	if gotMethod != http.MethodPost {
+		t.Fatalf("expected POST method, got %s", gotMethod)
 	}
-
-	if !strings.Contains(metricURL, "Heap%2FAlloc%20Value") {
-		t.Fatalf("expected escaped metric name in URL, got %s", metricURL)
+	if gotPath != "/update/" {
+		t.Fatalf("expected path /update/, got %s", gotPath)
+	}
+	if gotContentType != "application/json" {
+		t.Fatalf("expected Content-Type application/json, got %s", gotContentType)
+	}
+	if gotBody.ID != "Alloc" || gotBody.MType != models.Gauge || gotBody.Value == nil || *gotBody.Value != 12.5 {
+		t.Fatalf("unexpected request body: %+v", gotBody)
 	}
 }
 
-func TestBuildUpdateURL_TrimsTrailingSlashFromBase(t *testing.T) {
-	metricURL, err := buildUpdateURL("http://localhost:8080/", models.Counter, "PollCount", "1")
-	if err != nil {
+func TestSendMetricJson_TrimsTrailingSlashFromServerAddr(t *testing.T) {
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	a := NewAgent(ts.URL+"/", 2, 10, repository.NewMemStorage())
+
+	value := 1.0
+	if err := a.sendMetricJson(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if metricURL != "http://localhost:8080/update/counter/PollCount/1" {
-		t.Fatalf("expected trimmed base URL, got %s", metricURL)
+	if gotPath != "/update/" {
+		t.Fatalf("expected path /update/ without a doubled slash, got %s", gotPath)
 	}
 }
 
-func TestBuildUpdateURL_ReturnsErrorForInvalidBaseURL(t *testing.T) {
-	_, err := buildUpdateURL("http://[::1]:badport", models.Gauge, "Alloc", "1")
-	if err == nil {
-		t.Fatal("expected error for invalid base URL")
-	}
-}
-
-func TestSendMetric_ReturnsErrorOnNonOKStatus(t *testing.T) {
+func TestSendMetricJson_ReturnsErrorOnNonOKStatus(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -96,12 +118,13 @@ func TestSendMetric_ReturnsErrorOnNonOKStatus(t *testing.T) {
 
 	a := NewAgent(ts.URL, 2, 10, repository.NewMemStorage())
 
-	if err := a.sendMetric(models.Gauge, "Alloc", "1"); err == nil {
+	value := 1.0
+	if err := a.sendMetricJson(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
 		t.Fatal("expected error for non-200 response status")
 	}
 }
 
-func TestSendMetric_ReturnsErrorOnNetworkFailure(t *testing.T) {
+func TestSendMetricJson_ReturnsErrorOnNetworkFailure(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -110,7 +133,8 @@ func TestSendMetric_ReturnsErrorOnNetworkFailure(t *testing.T) {
 
 	a := NewAgent(unreachableAddr, 2, 10, repository.NewMemStorage())
 
-	if err := a.sendMetric(models.Gauge, "Alloc", "1"); err == nil {
+	value := 1.0
+	if err := a.sendMetricJson(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
 		t.Fatal("expected error when server is unreachable")
 	}
 }
@@ -135,7 +159,7 @@ func TestCollectOnceStoresMetrics(t *testing.T) {
 	}
 }
 
-func TestReportOnceSendsAllMetrics(t *testing.T) {
+func TestReportOnceJson_SendsAllMetricsAsJSON(t *testing.T) {
 	a := NewAgent("http://localhost:8080", 2, 10, repository.NewMemStorage())
 
 	g := 12.5
@@ -143,7 +167,7 @@ func TestReportOnceSendsAllMetrics(t *testing.T) {
 	_ = a.store.Update(&models.Metrics{ID: "TestGauge", MType: models.Gauge, Value: &g})
 	_ = a.store.Update(&models.Metrics{ID: "TestCounter", MType: models.Counter, Delta: &c})
 
-	got := make(map[string]bool)
+	got := make(map[string]models.Metrics)
 	var mu sync.Mutex
 	var handlerErr error
 
@@ -152,10 +176,17 @@ func TestReportOnceSendsAllMetrics(t *testing.T) {
 		if r.Method != http.MethodPost {
 			handlerErr = fmt.Errorf("expected POST method, got %s", r.Method)
 		}
-		if r.Header.Get("Content-Type") != "text/plain" {
-			handlerErr = fmt.Errorf("expected Content-Type text/plain, got %s", r.Header.Get("Content-Type"))
+		if r.URL.Path != "/update/" {
+			handlerErr = fmt.Errorf("expected path /update/, got %s", r.URL.Path)
 		}
-		got[r.URL.Path] = true
+		if r.Header.Get("Content-Type") != "application/json" {
+			handlerErr = fmt.Errorf("expected Content-Type application/json, got %s", r.Header.Get("Content-Type"))
+		}
+		var m models.Metrics
+		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+			handlerErr = fmt.Errorf("failed to decode request body: %w", err)
+		}
+		got[m.ID] = m
 		mu.Unlock()
 
 		w.WriteHeader(http.StatusOK)
@@ -163,7 +194,7 @@ func TestReportOnceSendsAllMetrics(t *testing.T) {
 	defer ts.Close()
 
 	a.serverAddr = ts.URL
-	a.reportOnce()
+	a.reportOnceJson()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -171,11 +202,13 @@ func TestReportOnceSendsAllMetrics(t *testing.T) {
 		t.Fatal(handlerErr)
 	}
 
-	if !got["/update/gauge/TestGauge/12.5"] {
-		t.Fatalf("expected gauge request path not received")
+	gauge, ok := got["TestGauge"]
+	if !ok || gauge.MType != models.Gauge || gauge.Value == nil || *gauge.Value != 12.5 {
+		t.Fatalf("expected gauge TestGauge=12.5 to be reported, got %+v (present=%v)", gauge, ok)
 	}
-	if !got["/update/counter/TestCounter/7"] {
-		t.Fatalf("expected counter request path not received")
+	counter, ok := got["TestCounter"]
+	if !ok || counter.MType != models.Counter || counter.Delta == nil || *counter.Delta != 7 {
+		t.Fatalf("expected counter TestCounter=7 to be reported, got %+v (present=%v)", counter, ok)
 	}
 }
 
@@ -194,7 +227,7 @@ func TestCollectOnce_LogsErrorWhenStoreUpdateFails(t *testing.T) {
 	}
 }
 
-func TestReportOnce_LogsErrorWhenSendFails(t *testing.T) {
+func TestReportOnceJson_LogsErrorWhenSendFails(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -207,7 +240,7 @@ func TestReportOnce_LogsErrorWhenSendFails(t *testing.T) {
 	})
 
 	output := captureLogOutput(func() {
-		a.reportOnce()
+		a.reportOnceJson()
 	})
 
 	if !strings.Contains(output, "send gauge error") {

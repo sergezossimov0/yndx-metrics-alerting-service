@@ -20,6 +20,9 @@ func Initialize(level string) error {
 	cfg := zap.NewProductionConfig()
 	// устанавливаем уровень
 	cfg.Level = lvl
+	// отключаем стектрейс: он одинаков для однотипных ошибок (например, сетевых)
+	// и не несёт диагностической пользы сверх поля caller
+	cfg.DisableStacktrace = true
 	// создаём логер на основе конфигурации
 	zl, err := cfg.Build()
 	if err != nil {

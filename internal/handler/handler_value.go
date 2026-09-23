@@ -1,14 +1,22 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/mailru/easyjson"
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
+	"go.uber.org/zap"
 )
+
+const headerContentType = "Content-Type"
+
+var errMetricNotFound = errors.New("metric not found")
 
 type MetricReader interface {
 	GetGauge(name string) (float64, bool)
@@ -17,42 +25,75 @@ type MetricReader interface {
 	ListCounters() map[string]int64
 }
 
-func GetMetricValueHandler(reader MetricReader) http.HandlerFunc {
+func GetMetricValueJsonHandler(reader MetricReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		metricType := chi.URLParam(r, "type")
-		metricName := chi.URLParam(r, "name")
-
-		if metricName == "" {
-			http.NotFound(w, r)
+		contentType := r.Header.Get(headerContentType)
+		if contentType != "" && !strings.HasPrefix(contentType, "application/json") {
+			http.Error(w, "invalid content type", http.StatusBadRequest)
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/plain")
-
-		switch metricType {
-		case models.Gauge:
-			value, ok := reader.GetGauge(metricName)
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
-			_, _ = w.Write([]byte(strconv.FormatFloat(value, 'f', -1, 64)))
-		case models.Counter:
-			value, ok := reader.GetCounter(metricName)
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
-			_, _ = w.Write([]byte(strconv.FormatInt(value, 10)))
-		default:
-			http.Error(w, "invalid metric type", http.StatusBadRequest)
+		var req models.Metrics
+		if err := easyjson.UnmarshalFromReader(r.Body, &req); err != nil {
+			logger.Log.Error("cannot decode request JSON body", zap.Error(err))
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
+
+		if err := validateMetricTypeRequest(&req, reader); err != nil {
+			if errors.Is(err, errMetricNotFound) {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		resBody, err := easyjson.Marshal(req)
+		if err != nil {
+			logger.Log.Error("cannot encode response JSON body", zap.Error(err))
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set(headerContentType, "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(resBody)
 	}
+}
+
+func validateMetricTypeRequest(req *models.Metrics, reader MetricReader) error {
+	if req.ID == "" {
+		return errMetricNameMissing
+	}
+
+	if req.MType == "" {
+		return errMetricTypeMissing
+	}
+
+	switch req.MType {
+	case models.Gauge:
+		value, ok := reader.GetGauge(req.ID)
+		if !ok {
+			return errMetricNotFound
+		}
+		req.Value = &value
+	case models.Counter:
+		value, ok := reader.GetCounter(req.ID)
+		if !ok {
+			return errMetricNotFound
+		}
+		req.Delta = &value
+	default:
+		return errInvalidMetricType
+	}
+
+	return nil
 }
 
 func ListMetricsHandler(reader MetricReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set(headerContentType, "text/html; charset=utf-8")
 
 		gauges := reader.ListGauges()
 		counters := reader.ListCounters()

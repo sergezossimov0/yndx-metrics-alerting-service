@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -18,20 +21,32 @@ func newTestHandler() (http.Handler, *repository.MemStorage) {
 	uc := usecase.NewMetricUpdate(store)
 	readUC := usecase.NewMetricRead(store)
 	r := chi.NewRouter()
-	r.Post("/update/{type}/{name}/{value}", UpdateMetricsHandler(&uc))
-	r.Get("/value/{type}/{name}", GetMetricValueHandler(&readUC))
+	r.Post("/update/", UpdateMetricsJsonHandler(&uc))
+	r.Post("/value/", GetMetricValueJsonHandler(&readUC))
 	r.Get("/", ListMetricsHandler(&readUC))
 	return r, store
 }
 
-func TestUpdateMetricsHandler_SuccessGauge(t *testing.T) {
+func postJSONRequest(h http.Handler, target string, contentType string, rawBody []byte) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(rawBody))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, req)
+	return res
+}
+
+func postMetric(h http.Handler, metric *models.Metrics) *httptest.ResponseRecorder {
+	raw, _ := json.Marshal(metric)
+	return postJSONRequest(h, "/update/", "application/json", raw)
+}
+
+func TestUpdateMetricsJsonHandler_SuccessGauge(t *testing.T) {
 	h, store := newTestHandler()
 
-	req := httptest.NewRequest(http.MethodPost, "/update/gauge/Alloc/123.45", nil)
-	req.Header.Set("Content-Type", "text/plain")
-	res := httptest.NewRecorder()
-
-	h.ServeHTTP(res, req)
+	value := 123.45
+	res := postMetric(h, &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value})
 
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, res.Code)
@@ -48,18 +63,13 @@ func TestUpdateMetricsHandler_SuccessGauge(t *testing.T) {
 	}
 }
 
-func TestUpdateMetricsHandler_SuccessCounterAccumulate(t *testing.T) {
+func TestUpdateMetricsJsonHandler_SuccessCounterAccumulate(t *testing.T) {
 	h, store := newTestHandler()
 
-	req1 := httptest.NewRequest(http.MethodPost, "/update/counter/PollCount/1", nil)
-	req1.Header.Set("Content-Type", "text/plain")
-	res1 := httptest.NewRecorder()
-	h.ServeHTTP(res1, req1)
-
-	req2 := httptest.NewRequest(http.MethodPost, "/update/counter/PollCount/2", nil)
-	req2.Header.Set("Content-Type", "text/plain")
-	res2 := httptest.NewRecorder()
-	h.ServeHTTP(res2, req2)
+	delta1 := int64(1)
+	delta2 := int64(2)
+	res1 := postMetric(h, &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &delta1})
+	res2 := postMetric(h, &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &delta2})
 
 	if res1.Code != http.StatusOK || res2.Code != http.StatusOK {
 		t.Fatalf("expected status 200 for both requests, got %d and %d", res1.Code, res2.Code)
@@ -71,77 +81,85 @@ func TestUpdateMetricsHandler_SuccessCounterAccumulate(t *testing.T) {
 	}
 }
 
-func TestUpdateMetricsHandler_Errors(t *testing.T) {
+func TestUpdateMetricsJsonHandler_Errors(t *testing.T) {
 	h, _ := newTestHandler()
+
+	gaugeValue := 1.0
+	validBody, _ := json.Marshal(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &gaugeValue})
+	missingTypeBody, _ := json.Marshal(&models.Metrics{ID: "Alloc"})
+	gaugeMissingValueBody, _ := json.Marshal(&models.Metrics{ID: "Alloc", MType: models.Gauge})
+	counterMissingDeltaBody, _ := json.Marshal(&models.Metrics{ID: "PollCount", MType: models.Counter})
+	unknownTypeBody, _ := json.Marshal(&models.Metrics{ID: "Alloc", MType: "unknown"})
+	missingNameBody, _ := json.Marshal(&models.Metrics{MType: models.Gauge, Value: &gaugeValue})
 
 	tests := []struct {
 		name        string
 		method      string
-		target      string
 		contentType string
+		body        []byte
 		expected    int
 	}{
 		{
 			name:        "method not allowed by contract",
 			method:      http.MethodGet,
-			target:      "/update/gauge/Alloc/1",
-			contentType: "text/plain",
+			contentType: "application/json",
+			body:        validBody,
 			expected:    http.StatusMethodNotAllowed,
 		},
 		{
 			name:        "invalid content type",
 			method:      http.MethodPost,
-			target:      "/update/gauge/Alloc/1",
-			contentType: "application/json",
+			contentType: "text/plain",
+			body:        validBody,
 			expected:    http.StatusBadRequest,
 		},
 		{
-			name:        "missing metric name",
+			name:        "malformed JSON body",
 			method:      http.MethodPost,
-			target:      "/update/gauge//123",
-			contentType: "text/plain",
-			expected:    http.StatusNotFound,
-		},
-		{
-			name:        "missing metric value",
-			method:      http.MethodPost,
-			target:      "/update/gauge/Alloc/",
-			contentType: "text/plain",
-			expected:    http.StatusNotFound,
-		},
-		{
-			name:        "invalid metric type",
-			method:      http.MethodPost,
-			target:      "/update/bad/Alloc/1",
-			contentType: "text/plain",
+			contentType: "application/json",
+			body:        []byte("not-json"),
 			expected:    http.StatusBadRequest,
 		},
 		{
 			name:        "missing metric type",
 			method:      http.MethodPost,
-			target:      "/update//Alloc/1",
-			contentType: "text/plain",
+			contentType: "application/json",
+			body:        missingTypeBody,
 			expected:    http.StatusBadRequest,
 		},
 		{
-			name:        "invalid gauge value",
+			name:        "gauge missing value",
 			method:      http.MethodPost,
-			target:      "/update/gauge/Alloc/abc",
-			contentType: "text/plain",
+			contentType: "application/json",
+			body:        gaugeMissingValueBody,
 			expected:    http.StatusBadRequest,
 		},
 		{
-			name:        "invalid counter value",
+			name:        "counter missing delta",
 			method:      http.MethodPost,
-			target:      "/update/counter/PollCount/abc",
-			contentType: "text/plain",
+			contentType: "application/json",
+			body:        counterMissingDeltaBody,
+			expected:    http.StatusBadRequest,
+		},
+		{
+			name:        "unknown metric type",
+			method:      http.MethodPost,
+			contentType: "application/json",
+			body:        unknownTypeBody,
+			expected:    http.StatusBadRequest,
+		},
+		{
+			name:        "missing metric name",
+			method:      http.MethodPost,
+			contentType: "application/json",
+			body:        missingNameBody,
 			expected:    http.StatusBadRequest,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.target, nil)
+			req := httptest.NewRequest(tt.method, "/update/", bytes.NewReader(tt.body))
 			req.Header.Set("Content-Type", tt.contentType)
 			res := httptest.NewRecorder()
 
@@ -154,49 +172,106 @@ func TestUpdateMetricsHandler_Errors(t *testing.T) {
 	}
 }
 
-type metricUpdaterMock struct {
-	err error
+func TestUpdateMetricsJsonHandler_RejectsIncompleteMetricAndDoesNotStoreIt(t *testing.T) {
+	h, store := newTestHandler()
+
+	res := postMetric(h, &models.Metrics{ID: "Alloc", MType: models.Gauge})
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
+	}
+
+	body, _ := io.ReadAll(res.Body)
+	if strings.TrimSpace(string(body)) != "invalid gauge value" {
+		t.Fatalf("expected only the validation error in the body, got %q", string(body))
+	}
+
+	if _, ok := store.ListGauges()["Alloc"]; ok {
+		t.Fatal("expected metric not to be stored when validation fails")
+	}
 }
 
-func (m *metricUpdaterMock) UpdateMetric(_ *models.Metrics) error {
-	return m.err
+func TestUpdateMetricsJsonHandler_RejectsUnknownMetricTypeAndDoesNotStoreIt(t *testing.T) {
+	h, store := newTestHandler()
+
+	res := postMetric(h, &models.Metrics{ID: "Alloc", MType: "unknown"})
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
+	}
+
+	body, _ := io.ReadAll(res.Body)
+	if strings.TrimSpace(string(body)) != "invalid metric type" {
+		t.Fatalf("expected only the validation error in the body, got %q", string(body))
+	}
+
+	if _, ok := store.ListGauges()["Alloc"]; ok {
+		t.Fatal("expected metric not to be stored when validation fails")
+	}
 }
 
-func TestUpdateMetricsHandler_ReturnsInternalServerErrorWhenUpdaterFails(t *testing.T) {
-	updater := &metricUpdaterMock{err: errors.New("store unavailable")}
-	r := chi.NewRouter()
-	r.Post("/update/{type}/{name}/{value}", UpdateMetricsHandler(updater))
+func TestUpdateMetricsJsonHandler_RejectsMissingNameAndDoesNotStoreIt(t *testing.T) {
+	h, store := newTestHandler()
 
-	req := httptest.NewRequest(http.MethodPost, "/update/gauge/Alloc/1", nil)
-	req.Header.Set("Content-Type", "text/plain")
-	res := httptest.NewRecorder()
+	value := 1.0
+	res := postMetric(h, &models.Metrics{MType: models.Gauge, Value: &value})
 
-	r.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
+	}
 
-	if res.Code != http.StatusInternalServerError {
-		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, res.Code)
+	body, _ := io.ReadAll(res.Body)
+	if strings.TrimSpace(string(body)) != "metric name is missing" {
+		t.Fatalf("expected only the validation error in the body, got %q", string(body))
+	}
+
+	if _, ok := store.ListGauges()[""]; ok {
+		t.Fatal("expected metric not to be stored when validation fails")
 	}
 }
 
 func TestValidateMetricRequest(t *testing.T) {
+	gaugeValue := 1.0
+	counterDelta := int64(1)
+
 	tests := []struct {
 		name    string
-		req     *metricRequest
+		req     *models.Metrics
 		wantErr error
 	}{
 		{
+			name:    "name missing",
+			req:     &models.Metrics{MType: models.Gauge, Value: &gaugeValue},
+			wantErr: errMetricNameMissing,
+		},
+		{
 			name:    "type missing",
-			req:     &metricRequest{Type: "", Name: "Alloc", Value: "1"},
+			req:     &models.Metrics{ID: "Alloc"},
 			wantErr: errMetricTypeMissing,
 		},
 		{
-			name:    "value missing",
-			req:     &metricRequest{Type: "gauge", Name: "Alloc", Value: ""},
-			wantErr: errMetricValueMissing,
+			name:    "gauge missing value",
+			req:     &models.Metrics{ID: "Alloc", MType: models.Gauge},
+			wantErr: errInvalidGaugeValue,
 		},
 		{
-			name:    "valid request",
-			req:     &metricRequest{Type: "gauge", Name: "Alloc", Value: "1"},
+			name:    "counter missing delta",
+			req:     &models.Metrics{ID: "PollCount", MType: models.Counter},
+			wantErr: errInvalidCounterValue,
+		},
+		{
+			name:    "unknown metric type",
+			req:     &models.Metrics{ID: "Alloc", MType: "unknown"},
+			wantErr: errInvalidMetricType,
+		},
+		{
+			name:    "valid gauge",
+			req:     &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &gaugeValue},
+			wantErr: nil,
+		},
+		{
+			name:    "valid counter",
+			req:     &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &counterDelta},
 			wantErr: nil,
 		},
 	}
@@ -211,79 +286,24 @@ func TestValidateMetricRequest(t *testing.T) {
 	}
 }
 
-func TestConvertMetric(t *testing.T) {
-	gaugeValue := 10.5
-	counterDelta := int64(5)
-
-	tests := []struct {
-		name       string
-		req        *metricRequest
-		wantErr    bool
-		wantMetric *models.Metrics
-	}{
-		{
-			name:       "valid gauge",
-			req:        &metricRequest{Type: "gauge", Name: "Alloc", Value: "10.5"},
-			wantMetric: &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &gaugeValue},
-		},
-		{
-			name:    "invalid gauge value",
-			req:     &metricRequest{Type: "gauge", Name: "Alloc", Value: "abc"},
-			wantErr: true,
-		},
-		{
-			name:       "valid counter",
-			req:        &metricRequest{Type: "counter", Name: "PollCount", Value: "5"},
-			wantMetric: &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &counterDelta},
-		},
-		{
-			name:    "invalid counter value",
-			req:     &metricRequest{Type: "counter", Name: "PollCount", Value: "abc"},
-			wantErr: true,
-		},
-		{
-			name:    "unknown metric type",
-			req:     &metricRequest{Type: "unknown", Name: "X", Value: "1"},
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			metric, err := convertMetric(tt.req)
-
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("expected nil error, got %v", err)
-			}
-			assertMetricEqual(t, tt.wantMetric, metric)
-		})
-	}
+type metricUpdaterMock struct {
+	err error
 }
 
-func assertMetricEqual(t *testing.T, want, got *models.Metrics) {
-	t.Helper()
+func (m *metricUpdaterMock) UpdateMetric(_ *models.Metrics) error {
+	return m.err
+}
 
-	if got.ID != want.ID {
-		t.Fatalf("expected ID %q, got %q", want.ID, got.ID)
-	}
-	if got.MType != want.MType {
-		t.Fatalf("expected MType %q, got %q", want.MType, got.MType)
-	}
-	if want.Value != nil {
-		if got.Value == nil || *got.Value != *want.Value {
-			t.Fatalf("expected Value %v, got %v", want.Value, got.Value)
-		}
-	}
-	if want.Delta != nil {
-		if got.Delta == nil || *got.Delta != *want.Delta {
-			t.Fatalf("expected Delta %v, got %v", want.Delta, got.Delta)
-		}
+func TestUpdateMetricsJsonHandler_ReturnsInternalServerErrorWhenUpdaterFails(t *testing.T) {
+	updater := &metricUpdaterMock{err: errors.New("store unavailable")}
+	r := chi.NewRouter()
+	r.Post("/update/", UpdateMetricsJsonHandler(updater))
+
+	value := 1.0
+	raw, _ := json.Marshal(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value})
+	res := postJSONRequest(r, "/update/", "application/json", raw)
+
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, res.Code)
 	}
 }

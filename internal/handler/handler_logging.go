@@ -9,7 +9,7 @@ import (
 )
 
 func WithLogging(h http.Handler) http.Handler {
-	logFn := func(w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
 		responseData := &responseData{
@@ -24,17 +24,14 @@ func WithLogging(h http.Handler) http.Handler {
 
 		duration := time.Since(start)
 
-		logger.Log.Info("Request",
+		logger.Log.Info("HTTP request",
 			zap.String("uri", r.RequestURI),
 			zap.String("method", r.Method),
 			zap.Duration("duration", duration),
-		)
-		logger.Log.Info("Response",
 			zap.Int("status", responseData.status), // получаем перехваченный код статуса ответа
 			zap.Int("size", responseData.size),     // получаем перехваченный размер ответа
 		)
-	}
-	return http.HandlerFunc(logFn)
+	})
 }
 
 type (

@@ -3,101 +3,78 @@ package handler
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/mailru/easyjson"
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
+	"go.uber.org/zap"
 )
 
-type metricRequest struct {
-	Type  string
-	Name  string
-	Value string
-}
+var (
+	errMetricNameMissing   = errors.New("metric name is missing")
+	errMetricTypeMissing   = errors.New("metric type is missing")
+	errInvalidMetricType   = errors.New("invalid metric type")
+	errInvalidGaugeValue   = errors.New("invalid gauge value")
+	errInvalidCounterValue = errors.New("invalid counter value")
+)
 
 type MetricUpdater interface {
 	UpdateMetric(metric *models.Metrics) error
 }
 
-func UpdateMetricsHandler(updater MetricUpdater) http.HandlerFunc {
+func UpdateMetricsJsonHandler(updater MetricUpdater) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		contentType := r.Header.Get("Content-Type")
-		if contentType != "" && !strings.HasPrefix(contentType, "text/plain") {
+		contentType := r.Header.Get(headerContentType)
+		if contentType != "" && !strings.HasPrefix(contentType, "application/json") {
 			http.Error(w, "invalid content type", http.StatusBadRequest)
 			return
 		}
 
-		metricType := chi.URLParam(r, "type")
-		metricName := chi.URLParam(r, "name")
-		metricValue := chi.URLParam(r, "value")
-
-		if metricName == "" {
-			http.NotFound(w, r)
+		var req models.Metrics
+		if err := easyjson.UnmarshalFromReader(r.Body, &req); err != nil {
+			logger.Log.Error("cannot decode request JSON body", zap.Error(err))
+			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 
-		metricRequest := &metricRequest{Type: metricType, Name: metricName, Value: metricValue}
-		if err := validateMetricRequest(metricRequest); err != nil {
+		if err := validateMetricRequest(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		metricModel, errConvert := convertMetric(metricRequest)
-		if errConvert != nil {
-			http.Error(w, errConvert.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if err := updater.UpdateMetric(metricModel); err != nil {
+		if err := updater.UpdateMetric(&req); err != nil {
 			http.Error(w, "failed to update metric", http.StatusInternalServerError)
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set(headerContentType, "text/plain")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	}
 }
 
-func validateMetricRequest(mr *metricRequest) error {
-	if mr.Type == "" {
+func validateMetricRequest(req *models.Metrics) error {
+	if req.ID == "" {
+		return errMetricNameMissing
+	}
+
+	if req.MType == "" {
 		return errMetricTypeMissing
 	}
-	if mr.Value == "" {
-		return errMetricValueMissing
+
+	switch req.MType {
+	case models.Gauge:
+		if req.Value == nil {
+			return errInvalidGaugeValue
+		}
+	case models.Counter:
+		if req.Delta == nil {
+			return errInvalidCounterValue
+		}
+	default:
+		return errInvalidMetricType
 	}
+
 	return nil
 }
-
-func convertMetric(mr *metricRequest) (*models.Metrics, error) {
-	switch mr.Type {
-	case "gauge":
-		convValue, err := strconv.ParseFloat(mr.Value, 64)
-		if err != nil {
-			return nil, errors.New("invalid gauge value")
-		}
-		return &models.Metrics{
-			ID:    mr.Name,
-			MType: mr.Type,
-			Value: &convValue,
-		}, nil
-	case "counter":
-		convDelta, err := strconv.ParseInt(mr.Value, 10, 64)
-		if err != nil {
-			return nil, errors.New("invalid counter value")
-		}
-		return &models.Metrics{
-			ID:    mr.Name,
-			MType: mr.Type,
-			Delta: &convDelta,
-		}, nil
-	default:
-		return nil, errors.New("invalid metric type")
-	}
-}
-
-var (
-	errMetricValueMissing = errors.New("metric value is missing")
-	errMetricTypeMissing  = errors.New("metric type is missing")
-)

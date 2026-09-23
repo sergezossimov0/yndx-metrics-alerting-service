@@ -1,16 +1,16 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math/rand"
 	"net/http"
-	"net/url"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/mailru/easyjson"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"go.uber.org/zap"
@@ -90,33 +90,19 @@ func (a *Agent) collectOnce() {
 	}
 }
 
-func buildUpdateURL(base, metricType, name, value string) (string, error) {
-	baseURL, err := url.Parse(base)
-	if err != nil {
-		return "", err
-	}
+func (a *Agent) sendMetricJson(body *models.Metrics) error {
+	metricURL := strings.TrimRight(a.serverAddr, "/") + "/update/"
 
-	baseNoSlash := strings.TrimRight(baseURL.String(), "/")
-	return fmt.Sprintf(
-		"%s/update/%s/%s/%s",
-		baseNoSlash,
-		url.PathEscape(metricType),
-		url.PathEscape(name),
-		url.PathEscape(value),
-	), nil
-}
-
-func (a *Agent) sendMetric(metricType, name, value string) error {
-	metricURL, err := buildUpdateURL(a.serverAddr, metricType, name, value)
+	reqBody, err := easyjson.Marshal(body)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, metricURL, nil)
+	req, err := http.NewRequest(http.MethodPost, metricURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return err
@@ -128,22 +114,32 @@ func (a *Agent) sendMetric(metricType, name, value string) error {
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s %s: unexpected status %d", metricType, name, resp.StatusCode)
+		return fmt.Errorf("%s %s: unexpected status %d", body.MType, body.ID, resp.StatusCode)
 	}
 	return nil
 }
 
-func (a *Agent) reportOnce() {
+func (a *Agent) reportOnceJson() {
 	gauges := a.store.ListGauges()
 	counters := a.store.ListCounters()
 
 	for name, value := range gauges {
-		if err := a.sendMetric(models.Gauge, name, strconv.FormatFloat(value, 'f', -1, 64)); err != nil {
+		gm := &models.Metrics{
+			ID:    name,
+			MType: models.Gauge,
+			Value: &value,
+		}
+		if err := a.sendMetricJson(gm); err != nil {
 			logger.Log.Error("send gauge error", zap.String("metric", name), zap.Error(err))
 		}
 	}
 	for name, value := range counters {
-		if err := a.sendMetric(models.Counter, name, strconv.FormatInt(value, 10)); err != nil {
+		cm := &models.Metrics{
+			ID:    name,
+			MType: models.Counter,
+			Delta: &value,
+		}
+		if err := a.sendMetricJson(cm); err != nil {
 			logger.Log.Error("send counter error", zap.String("metric", name), zap.Error(err))
 		}
 	}
@@ -165,7 +161,7 @@ func (a *Agent) Run(ctx context.Context) {
 		case <-pollTicker.C:
 			a.collectOnce()
 		case <-reportTicker.C:
-			a.reportOnce()
+			a.reportOnceJson()
 		}
 	}
 }
