@@ -14,7 +14,16 @@ import (
 	"go.uber.org/zap"
 )
 
-const headerContentType = "Content-Type"
+const (
+	headerContentType = "Content-Type"
+
+	contentTypeTextPlain = "text/plain"
+	contentTypeJSON      = "application/json"
+	contentTypeHTML      = "text/html"
+
+	msgInvalidContentType = "invalid content type"
+	msgFailedUpdateMetric = "failed to update metric"
+)
 
 var errMetricNotFound = errors.New("metric not found")
 
@@ -28,8 +37,8 @@ type MetricReader interface {
 func GetMetricValueJsonHandler(reader MetricReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		contentType := r.Header.Get(headerContentType)
-		if contentType != "" && !strings.HasPrefix(contentType, "application/json") {
-			http.Error(w, "invalid content type", http.StatusBadRequest)
+		if contentType != "" && !strings.HasPrefix(contentType, contentTypeJSON) {
+			http.Error(w, msgInvalidContentType, http.StatusBadRequest)
 			return
 		}
 
@@ -56,7 +65,7 @@ func GetMetricValueJsonHandler(reader MetricReader) http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set(headerContentType, "application/json")
+		w.Header().Set(headerContentType, contentTypeJSON)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(resBody)
 	}
@@ -93,7 +102,7 @@ func validateMetricTypeRequest(req *models.Metrics, reader MetricReader) error {
 
 func ListMetricsHandler(reader MetricReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set(headerContentType, "text/html; charset=utf-8")
+		w.Header().Set(headerContentType, contentTypeHTML+"; charset=utf-8")
 
 		gauges := reader.ListGauges()
 		counters := reader.ListCounters()

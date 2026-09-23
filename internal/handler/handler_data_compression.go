@@ -14,8 +14,8 @@ import (
 // сжимались, просто потому что у них нет заголовка Content-Type вовсе.
 func isCompressibleContentType(contentType string) bool {
 	return contentType == "" ||
-		strings.HasPrefix(contentType, "application/json") ||
-		strings.HasPrefix(contentType, "text/html")
+		strings.HasPrefix(contentType, contentTypeJSON) ||
+		strings.HasPrefix(contentType, contentTypeHTML)
 }
 
 func CompressionHandler(h http.Handler) http.Handler {

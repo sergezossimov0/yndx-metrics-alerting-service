@@ -26,8 +26,8 @@ type MetricUpdater interface {
 func UpdateMetricsJsonHandler(updater MetricUpdater) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		contentType := r.Header.Get(headerContentType)
-		if contentType != "" && !strings.HasPrefix(contentType, "application/json") {
-			http.Error(w, "invalid content type", http.StatusBadRequest)
+		if contentType != "" && !strings.HasPrefix(contentType, contentTypeJSON) {
+			http.Error(w, msgInvalidContentType, http.StatusBadRequest)
 			return
 		}
 
@@ -44,11 +44,11 @@ func UpdateMetricsJsonHandler(updater MetricUpdater) http.HandlerFunc {
 		}
 
 		if err := updater.UpdateMetric(&req); err != nil {
-			http.Error(w, "failed to update metric", http.StatusInternalServerError)
+			http.Error(w, msgFailedUpdateMetric, http.StatusInternalServerError)
 			return
 		}
 
-		w.Header().Set(headerContentType, "text/plain")
+		w.Header().Set(headerContentType, contentTypeTextPlain)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	}

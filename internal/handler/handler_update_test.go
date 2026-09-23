@@ -23,6 +23,8 @@ func newTestHandler() (http.Handler, *repository.MemStorage) {
 	r := chi.NewRouter()
 	r.Post("/update/", UpdateMetricsJsonHandler(&uc))
 	r.Post("/value/", GetMetricValueJsonHandler(&readUC))
+	r.Post("/update/{type}/{name}/{value}", UpdateMetricsHandler(&uc))
+	r.Get("/value/{type}/{name}", GetMetricValueHandler(&readUC))
 	r.Get("/", ListMetricsHandler(&readUC))
 	return r, store
 }
