@@ -46,7 +46,7 @@ func run() error {
 	r.Get("/", handler.ListMetricsHandler(&readUC))
 
 	logger.Log.Info("Running server", zap.String("address", serverAddr))
-	return http.ListenAndServe(serverAddr, handler.WithLogging(r))
+	return http.ListenAndServe(serverAddr, handler.WithLogging(handler.CompressionHandler(r)))
 }
 
 func normalizeHelpArg(args []string) []string {

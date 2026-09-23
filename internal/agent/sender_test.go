@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,16 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
+
+// decodeGzipJSONBody decompresses a gzip-encoded request body and decodes it as JSON.
+func decodeGzipJSONBody(r *http.Request, out interface{}) error {
+	zr, err := gzip.NewReader(r.Body)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+	return json.NewDecoder(zr).Decode(out)
+}
 
 // metricStoreMock lets tests force Update to fail, which the real
 // repository.MemStorage never does — needed to exercise the error-logging
@@ -57,14 +68,15 @@ func captureLogOutput(fn func()) string {
 }
 
 func TestSendMetricJson_SendsCorrectRequest(t *testing.T) {
-	var gotMethod, gotPath, gotContentType string
+	var gotMethod, gotPath, gotContentType, gotContentEncoding string
 	var gotBody models.Metrics
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
 		gotContentType = r.Header.Get("Content-Type")
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		gotContentEncoding = r.Header.Get("Content-Encoding")
+		_ = decodeGzipJSONBody(r, &gotBody)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer ts.Close()
@@ -84,6 +96,9 @@ func TestSendMetricJson_SendsCorrectRequest(t *testing.T) {
 	}
 	if gotContentType != "application/json" {
 		t.Fatalf("expected Content-Type application/json, got %s", gotContentType)
+	}
+	if gotContentEncoding != "gzip" {
+		t.Fatalf("expected Content-Encoding gzip, got %s", gotContentEncoding)
 	}
 	if gotBody.ID != "Alloc" || gotBody.MType != models.Gauge || gotBody.Value == nil || *gotBody.Value != 12.5 {
 		t.Fatalf("unexpected request body: %+v", gotBody)
@@ -182,8 +197,11 @@ func TestReportOnceJson_SendsAllMetricsAsJSON(t *testing.T) {
 		if r.Header.Get("Content-Type") != "application/json" {
 			handlerErr = fmt.Errorf("expected Content-Type application/json, got %s", r.Header.Get("Content-Type"))
 		}
+		if r.Header.Get("Content-Encoding") != "gzip" {
+			handlerErr = fmt.Errorf("expected Content-Encoding gzip, got %s", r.Header.Get("Content-Encoding"))
+		}
 		var m models.Metrics
-		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		if err := decodeGzipJSONBody(r, &m); err != nil {
 			handlerErr = fmt.Errorf("failed to decode request body: %w", err)
 		}
 		got[m.ID] = m

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"math/rand"
@@ -90,6 +91,21 @@ func (a *Agent) collectOnce() {
 	}
 }
 
+// gzipCompress сжимает данные в формат gzip перед отправкой на сервер.
+func gzipCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	defer zw.Close()
+
+	if _, err := zw.Write(data); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 func (a *Agent) sendMetricJson(body *models.Metrics) error {
 	metricURL := strings.TrimRight(a.serverAddr, "/") + "/update/"
 
@@ -98,11 +114,17 @@ func (a *Agent) sendMetricJson(body *models.Metrics) error {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, metricURL, bytes.NewReader(reqBody))
+	compressedBody, err := gzipCompress(reqBody)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, metricURL, bytes.NewReader(compressedBody))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return err
