@@ -17,3 +17,8 @@ type Metrics struct {
 	Value *float64 `json:"value,omitempty"`
 	Hash  string   `json:"hash,omitempty"`
 }
+
+// MetricsList — срез метрик для сериализации через easyjson (снапшот на диске).
+//
+//easyjson:json
+type MetricsList []Metrics

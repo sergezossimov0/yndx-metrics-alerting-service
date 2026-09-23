@@ -73,3 +73,42 @@ func (s *MemStorage) GetCounter(name string) (int64, bool) {
 	v, ok := s.Counters[name]
 	return v, ok
 }
+
+// Snapshot returns all currently stored metrics as a flat slice, suitable for
+// serializing to disk (see Snapshot).
+func (s *MemStorage) Snapshot() []models.Metrics {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	metrics := make([]models.Metrics, 0, len(s.Gauges)+len(s.Counters))
+	for name, value := range s.Gauges {
+		v := value
+		metrics = append(metrics, models.Metrics{ID: name, MType: models.Gauge, Value: &v})
+	}
+	for name, delta := range s.Counters {
+		d := delta
+		metrics = append(metrics, models.Metrics{ID: name, MType: models.Counter, Delta: &d})
+	}
+
+	return metrics
+}
+
+// Restore loads a previously saved snapshot (see Snapshot.Restore),
+// overwriting any gauge/counter with the same ID already present.
+func (s *MemStorage) Restore(metrics []models.Metrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, m := range metrics {
+		switch m.MType {
+		case models.Gauge:
+			if m.Value != nil {
+				s.Gauges[m.ID] = *m.Value
+			}
+		case models.Counter:
+			if m.Delta != nil {
+				s.Counters[m.ID] = *m.Delta
+			}
+		}
+	}
+}

@@ -130,6 +130,92 @@ func TestMemStorage_ListGauges_ReturnsIndependentCopy(t *testing.T) {
 	}
 }
 
+func TestMemStorage_Snapshot_ReturnsAllGaugesAndCounters(t *testing.T) {
+	s := NewMemStorage()
+	g := 10.5
+	c := int64(3)
+	_ = s.Update(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
+	_ = s.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c})
+
+	snapshot := s.Snapshot()
+	if len(snapshot) != 2 {
+		t.Fatalf("expected 2 metrics in snapshot, got %d", len(snapshot))
+	}
+
+	byID := make(map[string]models.Metrics)
+	for _, m := range snapshot {
+		byID[m.ID] = m
+	}
+
+	gauge, ok := byID["Alloc"]
+	if !ok || gauge.MType != models.Gauge || gauge.Value == nil || *gauge.Value != 10.5 {
+		t.Fatalf("expected gauge Alloc=10.5 in snapshot, got %+v (present=%v)", gauge, ok)
+	}
+	counter, ok := byID["PollCount"]
+	if !ok || counter.MType != models.Counter || counter.Delta == nil || *counter.Delta != 3 {
+		t.Fatalf("expected counter PollCount=3 in snapshot, got %+v (present=%v)", counter, ok)
+	}
+}
+
+func TestMemStorage_Snapshot_OfEmptyStorageReturnsEmptySlice(t *testing.T) {
+	s := NewMemStorage()
+
+	snapshot := s.Snapshot()
+	if len(snapshot) != 0 {
+		t.Fatalf("expected empty snapshot, got %d metrics", len(snapshot))
+	}
+}
+
+func TestMemStorage_Restore_PopulatesGaugesAndCounters(t *testing.T) {
+	s := NewMemStorage()
+	g := 42.5
+	c := int64(7)
+
+	s.Restore([]models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: &g},
+		{ID: "PollCount", MType: models.Counter, Delta: &c},
+	})
+
+	gotGauge, ok := s.GetGauge("Alloc")
+	if !ok || gotGauge != 42.5 {
+		t.Fatalf("expected restored gauge Alloc=42.5, got %v (present=%v)", gotGauge, ok)
+	}
+	gotCounter, ok := s.GetCounter("PollCount")
+	if !ok || gotCounter != 7 {
+		t.Fatalf("expected restored counter PollCount=7, got %v (present=%v)", gotCounter, ok)
+	}
+}
+
+func TestMemStorage_Restore_SetsCounterRatherThanAccumulating(t *testing.T) {
+	s := NewMemStorage()
+	existing := int64(100)
+	_ = s.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &existing})
+
+	restored := int64(7)
+	s.Restore([]models.Metrics{{ID: "PollCount", MType: models.Counter, Delta: &restored}})
+
+	got, _ := s.GetCounter("PollCount")
+	if got != 7 {
+		t.Fatalf("expected restore to set (not add) the counter to 7, got %v", got)
+	}
+}
+
+func TestMemStorage_Restore_SkipsEntriesWithNilValueOrDelta(t *testing.T) {
+	s := NewMemStorage()
+
+	s.Restore([]models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: nil},
+		{ID: "PollCount", MType: models.Counter, Delta: nil},
+	})
+
+	if _, ok := s.GetGauge("Alloc"); ok {
+		t.Fatal("expected gauge with nil Value to not be restored")
+	}
+	if _, ok := s.GetCounter("PollCount"); ok {
+		t.Fatal("expected counter with nil Delta to not be restored")
+	}
+}
+
 func TestMemStorage_ListCounters_ReturnsIndependentCopy(t *testing.T) {
 	s := NewMemStorage()
 	d := int64(1)
