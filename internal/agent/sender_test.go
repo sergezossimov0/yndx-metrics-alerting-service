@@ -67,7 +67,7 @@ func captureLogOutput(fn func()) string {
 	return buf.String()
 }
 
-func TestSendMetricJson_SendsCorrectRequest(t *testing.T) {
+func TestSendMetricJSON_SendsCorrectRequest(t *testing.T) {
 	var gotMethod, gotPath, gotContentType, gotContentEncoding string
 	var gotBody models.Metrics
 
@@ -84,7 +84,7 @@ func TestSendMetricJson_SendsCorrectRequest(t *testing.T) {
 	a := NewAgent(ts.URL, 2, 10, repository.NewMemStorage())
 
 	value := 12.5
-	if err := a.sendMetricJson(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err != nil {
+	if err := a.sendMetricJSON(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestSendMetricJson_SendsCorrectRequest(t *testing.T) {
 	}
 }
 
-func TestSendMetricJson_TrimsTrailingSlashFromServerAddr(t *testing.T) {
+func TestSendMetricJSON_TrimsTrailingSlashFromServerAddr(t *testing.T) {
 	var gotPath string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -116,7 +116,7 @@ func TestSendMetricJson_TrimsTrailingSlashFromServerAddr(t *testing.T) {
 	a := NewAgent(ts.URL+"/", 2, 10, repository.NewMemStorage())
 
 	value := 1.0
-	if err := a.sendMetricJson(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err != nil {
+	if err := a.sendMetricJSON(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestSendMetricJson_TrimsTrailingSlashFromServerAddr(t *testing.T) {
 	}
 }
 
-func TestSendMetricJson_ReturnsErrorOnNonOKStatus(t *testing.T) {
+func TestSendMetricJSON_ReturnsErrorOnNonOKStatus(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -134,12 +134,12 @@ func TestSendMetricJson_ReturnsErrorOnNonOKStatus(t *testing.T) {
 	a := NewAgent(ts.URL, 2, 10, repository.NewMemStorage())
 
 	value := 1.0
-	if err := a.sendMetricJson(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
+	if err := a.sendMetricJSON(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
 		t.Fatal("expected error for non-200 response status")
 	}
 }
 
-func TestSendMetricJson_ReturnsErrorOnNetworkFailure(t *testing.T) {
+func TestSendMetricJSON_ReturnsErrorOnNetworkFailure(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -149,7 +149,7 @@ func TestSendMetricJson_ReturnsErrorOnNetworkFailure(t *testing.T) {
 	a := NewAgent(unreachableAddr, 2, 10, repository.NewMemStorage())
 
 	value := 1.0
-	if err := a.sendMetricJson(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
+	if err := a.sendMetricJSON(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
 		t.Fatal("expected error when server is unreachable")
 	}
 }
@@ -174,7 +174,7 @@ func TestCollectOnceStoresMetrics(t *testing.T) {
 	}
 }
 
-func TestReportOnceJson_SendsAllMetricsAsJSON(t *testing.T) {
+func TestReportOnceJSON_SendsAllMetricsAsJSON(t *testing.T) {
 	a := NewAgent("http://localhost:8080", 2, 10, repository.NewMemStorage())
 
 	g := 12.5
@@ -212,7 +212,7 @@ func TestReportOnceJson_SendsAllMetricsAsJSON(t *testing.T) {
 	defer ts.Close()
 
 	a.serverAddr = ts.URL
-	a.reportOnceJson()
+	a.reportOnceJSON()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -245,7 +245,7 @@ func TestCollectOnce_LogsErrorWhenStoreUpdateFails(t *testing.T) {
 	}
 }
 
-func TestReportOnceJson_LogsErrorWhenSendFails(t *testing.T) {
+func TestReportOnceJSON_LogsErrorWhenSendFails(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -258,7 +258,7 @@ func TestReportOnceJson_LogsErrorWhenSendFails(t *testing.T) {
 	})
 
 	output := captureLogOutput(func() {
-		a.reportOnceJson()
+		a.reportOnceJSON()
 	})
 
 	if !strings.Contains(output, "send gauge error") {

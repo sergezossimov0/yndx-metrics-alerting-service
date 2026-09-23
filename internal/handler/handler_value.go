@@ -34,7 +34,7 @@ type MetricReader interface {
 	ListCounters() map[string]int64
 }
 
-func GetMetricValueJsonHandler(reader MetricReader) http.HandlerFunc {
+func GetMetricValueJSONHandler(reader MetricReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		contentType := r.Header.Get(headerContentType)
 		if contentType != "" && !strings.HasPrefix(contentType, contentTypeJSON) {

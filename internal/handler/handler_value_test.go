@@ -17,7 +17,7 @@ func postValueRequest(h http.Handler, metricID, metricType string) *httptest.Res
 	return postJSONRequest(h, "/value/", "application/json", raw)
 }
 
-func TestGetMetricValueJsonHandler_ReturnsGaugeValue(t *testing.T) {
+func TestGetMetricValueJSONHandler_ReturnsGaugeValue(t *testing.T) {
 	h, store := newTestHandler()
 	g := 10.5
 	_ = store.Update(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
@@ -36,7 +36,7 @@ func TestGetMetricValueJsonHandler_ReturnsGaugeValue(t *testing.T) {
 	}
 }
 
-func TestGetMetricValueJsonHandler_ReturnsCounterValue(t *testing.T) {
+func TestGetMetricValueJSONHandler_ReturnsCounterValue(t *testing.T) {
 	h, store := newTestHandler()
 	c := int64(3)
 	_ = store.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c})
@@ -55,7 +55,7 @@ func TestGetMetricValueJsonHandler_ReturnsCounterValue(t *testing.T) {
 	}
 }
 
-func TestGetMetricValueJsonHandler_Errors(t *testing.T) {
+func TestGetMetricValueJSONHandler_Errors(t *testing.T) {
 	h, _ := newTestHandler()
 
 	tests := []struct {
@@ -107,7 +107,7 @@ func TestGetMetricValueJsonHandler_Errors(t *testing.T) {
 	}
 }
 
-func TestGetMetricValueJsonHandler_InvalidContentTypeReturnsBadRequest(t *testing.T) {
+func TestGetMetricValueJSONHandler_InvalidContentTypeReturnsBadRequest(t *testing.T) {
 	h, _ := newTestHandler()
 
 	res := postJSONRequest(h, "/value/", "text/plain", []byte(`{"id":"Alloc","type":"gauge"}`))
@@ -196,7 +196,7 @@ func TestValidateMetricTypeRequest(t *testing.T) {
 	})
 }
 
-func TestGetMetricValueJsonHandler_MissingMetricNameReturnsBadRequest(t *testing.T) {
+func TestGetMetricValueJSONHandler_MissingMetricNameReturnsBadRequest(t *testing.T) {
 	h, _ := newTestHandler()
 
 	res := postValueRequest(h, "", models.Gauge)
@@ -209,7 +209,7 @@ func TestGetMetricValueJsonHandler_MissingMetricNameReturnsBadRequest(t *testing
 	}
 }
 
-func TestGetMetricValueJsonHandler_MalformedJSONReturnsBadRequest(t *testing.T) {
+func TestGetMetricValueJSONHandler_MalformedJSONReturnsBadRequest(t *testing.T) {
 	h, _ := newTestHandler()
 
 	res := postJSONRequest(h, "/value/", "application/json", []byte("not-json"))

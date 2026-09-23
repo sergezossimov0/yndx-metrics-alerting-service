@@ -21,8 +21,8 @@ func newTestHandler() (http.Handler, *repository.MemStorage) {
 	uc := usecase.NewMetricUpdate(store)
 	readUC := usecase.NewMetricRead(store)
 	r := chi.NewRouter()
-	r.Post("/update/", UpdateMetricsJsonHandler(&uc))
-	r.Post("/value/", GetMetricValueJsonHandler(&readUC))
+	r.Post("/update/", UpdateMetricsJSONHandler(&uc))
+	r.Post("/value/", GetMetricValueJSONHandler(&readUC))
 	r.Post("/update/{type}/{name}/{value}", UpdateMetricsHandler(&uc))
 	r.Get("/value/{type}/{name}", GetMetricValueHandler(&readUC))
 	r.Get("/", ListMetricsHandler(&readUC))
@@ -44,7 +44,7 @@ func postMetric(h http.Handler, metric *models.Metrics) *httptest.ResponseRecord
 	return postJSONRequest(h, "/update/", "application/json", raw)
 }
 
-func TestUpdateMetricsJsonHandler_SuccessGauge(t *testing.T) {
+func TestUpdateMetricsJSONHandler_SuccessGauge(t *testing.T) {
 	h, store := newTestHandler()
 
 	value := 123.45
@@ -65,7 +65,7 @@ func TestUpdateMetricsJsonHandler_SuccessGauge(t *testing.T) {
 	}
 }
 
-func TestUpdateMetricsJsonHandler_SuccessCounterAccumulate(t *testing.T) {
+func TestUpdateMetricsJSONHandler_SuccessCounterAccumulate(t *testing.T) {
 	h, store := newTestHandler()
 
 	delta1 := int64(1)
@@ -83,7 +83,7 @@ func TestUpdateMetricsJsonHandler_SuccessCounterAccumulate(t *testing.T) {
 	}
 }
 
-func TestUpdateMetricsJsonHandler_Errors(t *testing.T) {
+func TestUpdateMetricsJSONHandler_Errors(t *testing.T) {
 	h, _ := newTestHandler()
 
 	gaugeValue := 1.0
@@ -174,7 +174,7 @@ func TestUpdateMetricsJsonHandler_Errors(t *testing.T) {
 	}
 }
 
-func TestUpdateMetricsJsonHandler_RejectsIncompleteMetricAndDoesNotStoreIt(t *testing.T) {
+func TestUpdateMetricsJSONHandler_RejectsIncompleteMetricAndDoesNotStoreIt(t *testing.T) {
 	h, store := newTestHandler()
 
 	res := postMetric(h, &models.Metrics{ID: "Alloc", MType: models.Gauge})
@@ -193,7 +193,7 @@ func TestUpdateMetricsJsonHandler_RejectsIncompleteMetricAndDoesNotStoreIt(t *te
 	}
 }
 
-func TestUpdateMetricsJsonHandler_RejectsUnknownMetricTypeAndDoesNotStoreIt(t *testing.T) {
+func TestUpdateMetricsJSONHandler_RejectsUnknownMetricTypeAndDoesNotStoreIt(t *testing.T) {
 	h, store := newTestHandler()
 
 	res := postMetric(h, &models.Metrics{ID: "Alloc", MType: "unknown"})
@@ -212,7 +212,7 @@ func TestUpdateMetricsJsonHandler_RejectsUnknownMetricTypeAndDoesNotStoreIt(t *t
 	}
 }
 
-func TestUpdateMetricsJsonHandler_RejectsMissingNameAndDoesNotStoreIt(t *testing.T) {
+func TestUpdateMetricsJSONHandler_RejectsMissingNameAndDoesNotStoreIt(t *testing.T) {
 	h, store := newTestHandler()
 
 	value := 1.0
@@ -296,10 +296,10 @@ func (m *metricUpdaterMock) UpdateMetric(_ *models.Metrics) error {
 	return m.err
 }
 
-func TestUpdateMetricsJsonHandler_ReturnsInternalServerErrorWhenUpdaterFails(t *testing.T) {
+func TestUpdateMetricsJSONHandler_ReturnsInternalServerErrorWhenUpdaterFails(t *testing.T) {
 	updater := &metricUpdaterMock{err: errors.New("store unavailable")}
 	r := chi.NewRouter()
-	r.Post("/update/", UpdateMetricsJsonHandler(updater))
+	r.Post("/update/", UpdateMetricsJSONHandler(updater))
 
 	value := 1.0
 	raw, _ := json.Marshal(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value})

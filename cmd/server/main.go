@@ -71,8 +71,8 @@ func run() error {
 	readUC := usecase.NewMetricRead(store)
 	r := chi.NewRouter()
 
-	r.Post("/update/", handler.UpdateMetricsJsonHandler(&uc))
-	r.Post("/value/", handler.GetMetricValueJsonHandler(&readUC))
+	r.Post("/update/", handler.UpdateMetricsJSONHandler(&uc))
+	r.Post("/value/", handler.GetMetricValueJSONHandler(&readUC))
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetricsHandler(&uc))
 	r.Get("/value/{type}/{name}", handler.GetMetricValueHandler(&readUC))
 	r.Get("/", handler.ListMetricsHandler(&readUC))

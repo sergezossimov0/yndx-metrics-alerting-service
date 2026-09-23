@@ -23,7 +23,7 @@ type MetricUpdater interface {
 	UpdateMetric(metric *models.Metrics) error
 }
 
-func UpdateMetricsJsonHandler(updater MetricUpdater) http.HandlerFunc {
+func UpdateMetricsJSONHandler(updater MetricUpdater) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		contentType := r.Header.Get(headerContentType)
 		if contentType != "" && !strings.HasPrefix(contentType, contentTypeJSON) {

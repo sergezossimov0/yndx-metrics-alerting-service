@@ -106,7 +106,7 @@ func gzipCompress(data []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (a *Agent) sendMetricJson(body *models.Metrics) error {
+func (a *Agent) sendMetricJSON(body *models.Metrics) error {
 	metricURL := strings.TrimRight(a.serverAddr, "/") + "/update/"
 
 	reqBody, err := easyjson.Marshal(body)
@@ -141,7 +141,7 @@ func (a *Agent) sendMetricJson(body *models.Metrics) error {
 	return nil
 }
 
-func (a *Agent) reportOnceJson() {
+func (a *Agent) reportOnceJSON() {
 	gauges := a.store.ListGauges()
 	counters := a.store.ListCounters()
 
@@ -151,7 +151,7 @@ func (a *Agent) reportOnceJson() {
 			MType: models.Gauge,
 			Value: &value,
 		}
-		if err := a.sendMetricJson(gm); err != nil {
+		if err := a.sendMetricJSON(gm); err != nil {
 			logger.Log.Error("send gauge error", zap.String("metric", name), zap.Error(err))
 		}
 	}
@@ -161,7 +161,7 @@ func (a *Agent) reportOnceJson() {
 			MType: models.Counter,
 			Delta: &value,
 		}
-		if err := a.sendMetricJson(cm); err != nil {
+		if err := a.sendMetricJSON(cm); err != nil {
 			logger.Log.Error("send counter error", zap.String("metric", name), zap.Error(err))
 		}
 	}
@@ -183,7 +183,7 @@ func (a *Agent) Run(ctx context.Context) {
 		case <-pollTicker.C:
 			a.collectOnce()
 		case <-reportTicker.C:
-			a.reportOnceJson()
+			a.reportOnceJSON()
 		}
 	}
 }
