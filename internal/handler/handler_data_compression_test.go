@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
 )
 
 func TestCompressionHandler_PassesThroughRequestsRegardlessOfContentType(t *testing.T) {
@@ -21,7 +23,7 @@ func TestCompressionHandler_PassesThroughRequestsRegardlessOfContentType(t *test
 	req.Header.Set("Content-Type", "text/plain")
 	res := httptest.NewRecorder()
 
-	CompressionHandler(inner).ServeHTTP(res, req)
+	CompressionHandler(zap.NewNop())(inner).ServeHTTP(res, req)
 
 	if !reached {
 		t.Fatal("expected the request to reach the wrapped handler regardless of its Content-Type")
@@ -41,7 +43,7 @@ func TestCompressionHandler_PassesThroughRequestsWithoutContentType(t *testing.T
 	req := httptest.NewRequest(http.MethodPost, "/update/", strings.NewReader(`{"id":"Alloc"}`))
 	res := httptest.NewRecorder()
 
-	CompressionHandler(inner).ServeHTTP(res, req)
+	CompressionHandler(zap.NewNop())(inner).ServeHTTP(res, req)
 
 	if !reached {
 		t.Fatal("expected the request to reach the wrapped handler even without a Content-Type header")
@@ -84,7 +86,7 @@ func TestCompressionHandler_SkipsCompressionForUnsupportedContentTypeButStillCal
 	req.Header.Set("Accept-Encoding", "gzip")
 	res := httptest.NewRecorder()
 
-	CompressionHandler(inner).ServeHTTP(res, req)
+	CompressionHandler(zap.NewNop())(inner).ServeHTTP(res, req)
 
 	if !reached {
 		t.Fatal("expected the request to still reach the wrapped handler")
@@ -107,7 +109,7 @@ func TestCompressionHandler_CompressesResponseWhenAcceptEncodingGzip(t *testing.
 	req.Header.Set("Accept-Encoding", "gzip")
 	res := httptest.NewRecorder()
 
-	CompressionHandler(inner).ServeHTTP(res, req)
+	CompressionHandler(zap.NewNop())(inner).ServeHTTP(res, req)
 
 	if res.Header().Get("Content-Encoding") != "gzip" {
 		t.Fatalf("expected Content-Encoding: gzip, got %q", res.Header().Get("Content-Encoding"))
@@ -126,7 +128,7 @@ func TestCompressionHandler_DoesNotCompressResponseBelowSizeThreshold(t *testing
 	req.Header.Set("Accept-Encoding", "gzip")
 	res := httptest.NewRecorder()
 
-	CompressionHandler(inner).ServeHTTP(res, req)
+	CompressionHandler(zap.NewNop())(inner).ServeHTTP(res, req)
 
 	if res.Header().Get("Content-Encoding") != "" {
 		t.Fatalf("expected no Content-Encoding for a body below the size threshold, got %q", res.Header().Get("Content-Encoding"))
@@ -144,7 +146,7 @@ func TestCompressionHandler_DoesNotCompressResponseWithoutAcceptEncoding(t *test
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	res := httptest.NewRecorder()
 
-	CompressionHandler(inner).ServeHTTP(res, req)
+	CompressionHandler(zap.NewNop())(inner).ServeHTTP(res, req)
 
 	if res.Header().Get("Content-Encoding") != "" {
 		t.Fatalf("expected no Content-Encoding, got %q", res.Header().Get("Content-Encoding"))
@@ -178,9 +180,77 @@ func TestCompressionHandler_DecompressesGzipRequestBody(t *testing.T) {
 	req.Header.Set("Content-Encoding", "gzip")
 	res := httptest.NewRecorder()
 
-	CompressionHandler(inner).ServeHTTP(res, req)
+	CompressionHandler(zap.NewNop())(inner).ServeHTTP(res, req)
 
 	if string(gotBody) != `{"id":"Alloc"}` {
 		t.Fatalf("expected decompressed body %q, got %q", `{"id":"Alloc"}`, string(gotBody))
+	}
+}
+
+// headerCountingRecorder counts WriteHeader calls: httptest.ResponseRecorder
+// silently ignores a second call, while a real server logs
+// "http: superfluous response.WriteHeader call".
+type headerCountingRecorder struct {
+	*httptest.ResponseRecorder
+	writeHeaderCalls int
+}
+
+func (r *headerCountingRecorder) WriteHeader(code int) {
+	r.writeHeaderCalls++
+	r.ResponseRecorder.WriteHeader(code)
+}
+
+// A body declared as gzip but not valid gzip is the client's fault: the
+// middleware must answer 400, not call the handler and not log anything.
+func TestCompressionHandler_InvalidGzipRequestBodyReturnsBadRequest(t *testing.T) {
+	tests := []struct {
+		name           string
+		acceptEncoding string
+	}{
+		{"plain response", ""},
+		{"client also accepts gzip response", "gzip"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertInvalidGzipRejected(t, tt.acceptEncoding)
+		})
+	}
+}
+
+// assertInvalidGzipRejected sends a body declared as gzip but not valid gzip,
+// with the given Accept-Encoding, and checks that the middleware answers 400
+// exactly once, without calling the handler or logging.
+func assertInvalidGzipRejected(t *testing.T, acceptEncoding string) {
+	t.Helper()
+
+	var reached bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/update/", strings.NewReader("definitely not gzip"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	if acceptEncoding != "" {
+		req.Header.Set("Accept-Encoding", acceptEncoding)
+	}
+	res := &headerCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+	log, logs := newObservedLogger()
+
+	CompressionHandler(log)(inner).ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
+	}
+	if res.writeHeaderCalls != 1 {
+		t.Fatalf("expected exactly one WriteHeader call, got %d", res.writeHeaderCalls)
+	}
+	if reached {
+		t.Fatal("expected the handler not to be called for an invalid gzip body")
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("expected the client error not to be logged, got %v", logs.All())
 	}
 }

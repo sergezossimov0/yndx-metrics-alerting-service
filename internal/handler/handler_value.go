@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/mailru/easyjson"
-	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"go.uber.org/zap"
 )
@@ -22,6 +21,7 @@ const (
 	contentTypeHTML      = "text/html"
 
 	msgInvalidContentType = "invalid content type"
+	msgInvalidJSONBody    = "invalid JSON body"
 	msgFailedUpdateMetric = "failed to update metric"
 )
 
@@ -34,7 +34,7 @@ type MetricReader interface {
 	ListCounters() map[string]int64
 }
 
-func GetMetricValueJSONHandler(reader MetricReader) http.HandlerFunc {
+func GetMetricValueJSONHandler(reader MetricReader, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		contentType := r.Header.Get(headerContentType)
 		if contentType != "" && !strings.HasPrefix(contentType, contentTypeJSON) {
@@ -44,8 +44,8 @@ func GetMetricValueJSONHandler(reader MetricReader) http.HandlerFunc {
 
 		var req models.Metrics
 		if err := easyjson.UnmarshalFromReader(r.Body, &req); err != nil {
-			logger.Log.Error("cannot decode request JSON body", zap.Error(err))
-			w.WriteHeader(http.StatusBadRequest)
+			// client error: not logged, the access log already records the 400
+			http.Error(w, msgInvalidJSONBody, http.StatusBadRequest)
 			return
 		}
 
@@ -60,7 +60,7 @@ func GetMetricValueJSONHandler(reader MetricReader) http.HandlerFunc {
 
 		resBody, err := easyjson.Marshal(req)
 		if err != nil {
-			logger.Log.Error("cannot encode response JSON body", zap.Error(err))
+			log.Error("cannot encode response JSON body", zap.Error(err))
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

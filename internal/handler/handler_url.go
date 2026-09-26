@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
+	"go.uber.org/zap"
 )
 
 // Legacy URL-parameter endpoints (iterations 1–6), kept alongside the JSON API:
@@ -15,7 +16,7 @@ import (
 //   GET  /value/{type}/{name}
 
 // UpdateMetricsHandler updates a metric passed in the URL path.
-func UpdateMetricsHandler(updater MetricUpdater) http.HandlerFunc {
+func UpdateMetricsHandler(updater MetricUpdater, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		contentType := r.Header.Get(headerContentType)
 		if contentType != "" && !strings.HasPrefix(contentType, contentTypeTextPlain) {
@@ -34,6 +35,9 @@ func UpdateMetricsHandler(updater MetricUpdater) http.HandlerFunc {
 		}
 
 		if err := updater.UpdateMetric(metric); err != nil {
+			// server error: logged, the client only gets a generic message
+			log.Error(msgFailedUpdateMetric,
+				zap.String("metric", metric.ID), zap.String("type", metric.MType), zap.Error(err))
 			http.Error(w, msgFailedUpdateMetric, http.StatusInternalServerError)
 			return
 		}

@@ -2,8 +2,8 @@ package agent
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -12,10 +12,13 @@ import (
 	"time"
 
 	"github.com/mailru/easyjson"
-	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/compress"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"go.uber.org/zap"
 )
+
+// shutdownFlushTimeout bounds the whole final report, not a single request.
+const shutdownFlushTimeout = 5 * time.Second
 
 type metricStore interface {
 	Update(metric *models.Metrics) error
@@ -29,17 +32,19 @@ type Agent struct {
 	pollInterval   time.Duration
 	reportInterval time.Duration
 	client         *http.Client
+	log            *zap.Logger
 }
 
-func NewAgent(serverAddr string, pollSec, reportSec int, storage metricStore) *Agent {
+func NewAgent(serverAddr string, pollInterval, reportInterval time.Duration, storage metricStore, log *zap.Logger) *Agent {
 	return &Agent{
 		store:          storage,
 		serverAddr:     serverAddr,
-		pollInterval:   time.Duration(pollSec) * time.Second,
-		reportInterval: time.Duration(reportSec) * time.Second,
+		pollInterval:   pollInterval,
+		reportInterval: reportInterval,
 		client: &http.Client{
 			Timeout: 3 * time.Second,
 		},
+		log: log,
 	}
 }
 
@@ -81,32 +86,17 @@ func (a *Agent) collectOnce() {
 	for name, value := range metrics {
 		gaugeValue := value
 		if err := a.store.Update(&models.Metrics{ID: name, MType: models.Gauge, Value: &gaugeValue}); err != nil {
-			logger.Log.Error("collect gauge error", zap.String("metric", name), zap.Error(err))
+			a.log.Error("collect gauge error", zap.String("metric", name), zap.Error(err))
 		}
 	}
 
 	pollInc := int64(1)
 	if err := a.store.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &pollInc}); err != nil {
-		logger.Log.Error("collect counter error", zap.String("metric", "PollCount"), zap.Error(err))
+		a.log.Error("collect counter error", zap.String("metric", "PollCount"), zap.Error(err))
 	}
 }
 
-// gzipCompress сжимает данные в формат gzip перед отправкой на сервер.
-func gzipCompress(data []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	defer zw.Close()
-
-	if _, err := zw.Write(data); err != nil {
-		return nil, err
-	}
-	if err := zw.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-func (a *Agent) sendMetricJSON(body *models.Metrics) error {
+func (a *Agent) sendMetricJSON(ctx context.Context, body *models.Metrics) error {
 	metricURL := strings.TrimRight(a.serverAddr, "/") + "/update/"
 
 	reqBody, err := easyjson.Marshal(body)
@@ -114,12 +104,12 @@ func (a *Agent) sendMetricJSON(body *models.Metrics) error {
 		return err
 	}
 
-	compressedBody, err := gzipCompress(reqBody)
+	compressedBody, err := compress.Compress(reqBody)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, metricURL, bytes.NewReader(compressedBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, metricURL, bytes.NewReader(compressedBody))
 	if err != nil {
 		return err
 	}
@@ -131,7 +121,7 @@ func (a *Agent) sendMetricJSON(body *models.Metrics) error {
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
-			logger.Log.Error("close response body error", zap.Error(closeErr))
+			a.log.Error("close response body error", zap.Error(closeErr))
 		}
 	}()
 
@@ -141,30 +131,51 @@ func (a *Agent) sendMetricJSON(body *models.Metrics) error {
 	return nil
 }
 
-func (a *Agent) reportOnceJSON() {
+func (a *Agent) reportOnceJSON(ctx context.Context) {
 	gauges := a.store.ListGauges()
 	counters := a.store.ListCounters()
 
 	for name, value := range gauges {
+		if ctx.Err() != nil {
+			a.logReportInterrupted(ctx)
+			return
+		}
 		gm := &models.Metrics{
 			ID:    name,
 			MType: models.Gauge,
 			Value: &value,
 		}
-		if err := a.sendMetricJSON(gm); err != nil {
-			logger.Log.Error("send gauge error", zap.String("metric", name), zap.Error(err))
+		if err := a.sendMetricJSON(ctx, gm); err != nil {
+			a.logSendError("send gauge error", name, err)
 		}
 	}
 	for name, value := range counters {
+		if ctx.Err() != nil {
+			a.logReportInterrupted(ctx)
+			return
+		}
 		cm := &models.Metrics{
 			ID:    name,
 			MType: models.Counter,
 			Delta: &value,
 		}
-		if err := a.sendMetricJSON(cm); err != nil {
-			logger.Log.Error("send counter error", zap.String("metric", name), zap.Error(err))
+		if err := a.sendMetricJSON(ctx, cm); err != nil {
+			a.logSendError("send counter error", name, err)
 		}
 	}
+}
+
+func (a *Agent) logReportInterrupted(ctx context.Context) {
+	a.log.Warn("report interrupted", zap.Error(ctx.Err()))
+}
+
+// logSendError downgrades errors caused by shutdown: they are expected, not failures.
+func (a *Agent) logSendError(msg, name string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		a.log.Debug(msg, zap.String("metric", name), zap.Error(err))
+		return
+	}
+	a.log.Error(msg, zap.String("metric", name), zap.Error(err))
 }
 
 func (a *Agent) Run(ctx context.Context) {
@@ -179,11 +190,14 @@ func (a *Agent) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			flushCtx, cancel := context.WithTimeout(context.Background(), shutdownFlushTimeout)
+			a.reportOnceJSON(flushCtx) // final report before exit
+			cancel()
 			return
 		case <-pollTicker.C:
 			a.collectOnce()
 		case <-reportTicker.C:
-			a.reportOnceJSON()
+			a.reportOnceJSON(ctx)
 		}
 	}
 }

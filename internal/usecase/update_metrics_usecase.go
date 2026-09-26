@@ -2,17 +2,22 @@ package usecase
 
 import (
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
-	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
 )
 
-func NewMetricUpdate(store repository.UpdateMetricStore) MetricUpdate {
+// MetricUpdateStore is what MetricUpdate needs from a storage. It is declared
+// here, next to its consumer, not in the repository package.
+type MetricUpdateStore interface {
+	Update(metric *models.Metrics) error
+}
+
+func NewMetricUpdate(store MetricUpdateStore) MetricUpdate {
 	return MetricUpdate{
 		store: store,
 	}
 }
 
 type MetricUpdate struct {
-	store repository.UpdateMetricStore
+	store MetricUpdateStore
 }
 
 func (mu *MetricUpdate) UpdateMetric(metric *models.Metrics) error {

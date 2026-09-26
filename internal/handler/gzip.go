@@ -5,6 +5,8 @@ import (
 	"compress/gzip"
 	"io"
 	"net/http"
+
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/compress"
 )
 
 // minCompressibleResponseSize — если суммарный объём тела ответа меньше этого
@@ -25,6 +27,7 @@ type compressWriter struct {
 	statusCode   int
 	headerCalled bool
 	flushed      bool
+	closed       bool
 	zw           *gzip.Writer
 }
 
@@ -74,16 +77,13 @@ func (c *compressWriter) startCompressing() error {
 	c.w.Header().Set("Content-Encoding", "gzip")
 	c.flushHeader()
 
-	gz, err := gzip.NewWriterLevel(c.w, gzip.BestSpeed)
-	if err != nil {
-		return err
-	}
-	c.zw = gz
+	// writer берётся из пула; вернуть его в пул обязан Close
+	c.zw = compress.GetWriter(c.w)
 
 	if c.buf.Len() == 0 {
 		return nil
 	}
-	_, err = c.zw.Write(c.buf.Bytes())
+	_, err := c.zw.Write(c.buf.Bytes())
 	c.buf.Reset()
 	return err
 }
@@ -99,10 +99,20 @@ func (c *compressWriter) flushHeader() {
 // Close завершает работу compressWriter: если суммарный объём ответа так и не
 // превысил minCompressibleResponseSize, тело отправляется как есть, без
 // сжатия и без заголовка Content-Encoding; иначе закрывает gzip.Writer и
-// досылает все оставшиеся данные из его внутреннего буфера.
+// досылает все оставшиеся данные из его внутреннего буфера и возвращает
+// gzip.Writer в пул. Повторный вызов Close ничего не делает: иначе один и тот
+// же writer попал бы в пул дважды и достался бы двум запросам одновременно.
 func (c *compressWriter) Close() error {
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+
 	if c.zw != nil {
-		return c.zw.Close()
+		err := c.zw.Close()
+		compress.PutWriter(c.zw)
+		c.zw = nil
+		return err
 	}
 
 	if !c.headerCalled {
@@ -125,7 +135,7 @@ type compressReader struct {
 }
 
 func newCompressReader(r io.ReadCloser) (*compressReader, error) {
-	zr, err := gzip.NewReader(r)
+	zr, err := compress.NewReader(r)
 	if err != nil {
 		return nil, err
 	}

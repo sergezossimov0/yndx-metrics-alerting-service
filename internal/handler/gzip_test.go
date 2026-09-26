@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/compress"
 )
 
 func TestCompressWriter_SmallBodyIsNotCompressed(t *testing.T) {
@@ -156,6 +158,65 @@ func TestCompressWriter_EmptyBodyClosesCleanly(t *testing.T) {
 	}
 	if rec.Header().Get("Content-Encoding") != "" {
 		t.Fatalf("expected no Content-Encoding for an empty body, got %q", rec.Header().Get("Content-Encoding"))
+	}
+}
+
+func TestCompressWriter_SecondCloseOfCompressedBodyIsNoop(t *testing.T) {
+	body := strings.Repeat("a", minCompressibleResponseSize)
+
+	rec := httptest.NewRecorder()
+	cw := newCompressWriter(rec)
+
+	if _, err := cw.Write([]byte(body)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := cw.Close(); err != nil {
+		t.Fatalf("unexpected error on first Close: %v", err)
+	}
+	sizeAfterFirstClose := rec.Body.Len()
+
+	if err := cw.Close(); err != nil {
+		t.Fatalf("expected second Close to be a no-op, got error: %v", err)
+	}
+
+	if cw.zw != nil {
+		t.Fatal("expected the gzip writer to be released after Close")
+	}
+	if rec.Body.Len() != sizeAfterFirstClose {
+		t.Fatalf("expected second Close to write nothing, body grew from %d to %d bytes", sizeAfterFirstClose, rec.Body.Len())
+	}
+	if decodeGzipBody(t, rec.Body.Bytes()) != body {
+		t.Fatalf("decoded body does not match original")
+	}
+
+	// A writer put twice would be returned by two consecutive Gets. This check
+	// cannot catch every double Put (sync.Pool gives no ordering guarantees),
+	// but it never fails when the writer was put exactly once.
+	a := compress.GetWriter(io.Discard)
+	b := compress.GetWriter(io.Discard)
+	defer compress.PutWriter(a)
+	defer compress.PutWriter(b)
+	if a == b {
+		t.Fatal("the same gzip writer was handed out twice: it was put into the pool twice")
+	}
+}
+
+func TestCompressWriter_SecondCloseOfPlainBodyDoesNotRepeatIt(t *testing.T) {
+	rec := httptest.NewRecorder()
+	cw := newCompressWriter(rec)
+
+	if _, err := cw.Write([]byte("hello")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := cw.Close(); err != nil {
+		t.Fatalf("unexpected error on first Close: %v", err)
+	}
+	if err := cw.Close(); err != nil {
+		t.Fatalf("expected second Close to be a no-op, got error: %v", err)
+	}
+
+	if rec.Body.String() != "hello" {
+		t.Fatalf("expected body %q to be sent once, got %q", "hello", rec.Body.String())
 	}
 }
 

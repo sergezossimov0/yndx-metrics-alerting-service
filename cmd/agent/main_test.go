@@ -4,6 +4,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestNormalizeHelpArg_ReplacesLongHelpFlagWithShort(t *testing.T) {
@@ -71,6 +72,29 @@ func unsetEnv(t *testing.T, key string) {
 	})
 }
 
+func unsetAllAgentEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{"ADDRESS", "REPORT_INTERVAL", "POLL_INTERVAL"} {
+		unsetEnv(t, key)
+	}
+}
+
+// resolvedConfig holds only the resolved values, so expectations do not
+// depend on the internal isSet markers of intervalValid.
+type resolvedConfig struct {
+	serverAddress  string
+	reportInterval time.Duration
+	pollInterval   time.Duration
+}
+
+func resolved(c *config) resolvedConfig {
+	return resolvedConfig{
+		serverAddress:  c.serverAddress,
+		reportInterval: c.reportInterval.interval,
+		pollInterval:   c.pollInterval.interval,
+	}
+}
+
 func TestResolveConfig_AllEnvVarsTakePrecedenceOverFlags(t *testing.T) {
 	t.Setenv("ADDRESS", "192.168.1.1:9090")
 	t.Setenv("REPORT_INTERVAL", "20")
@@ -82,41 +106,37 @@ func TestResolveConfig_AllEnvVarsTakePrecedenceOverFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := &config{serverAddress: "192.168.1.1:9090", reportInterval: 20, pollInterval: 5}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected %+v, got %+v", want, got)
+	want := resolvedConfig{serverAddress: "192.168.1.1:9090", reportInterval: 20 * time.Second, pollInterval: 5 * time.Second}
+	if !reflect.DeepEqual(resolved(got), want) {
+		t.Fatalf("expected %+v, got %+v", want, resolved(got))
 	}
 }
 
 func TestResolveConfig_UsesFlagsWhenEnvNotSet(t *testing.T) {
-	unsetEnv(t, "ADDRESS")
-	unsetEnv(t, "REPORT_INTERVAL")
-	unsetEnv(t, "POLL_INTERVAL")
+	unsetAllAgentEnv(t)
 	withAgentArgs(t, []string{"-a", "localhost:1234", "-r", "15", "-p", "3"})
 
 	got, err := resolveConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := &config{serverAddress: "localhost:1234", reportInterval: 15, pollInterval: 3}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected %+v, got %+v", want, got)
+	want := resolvedConfig{serverAddress: "localhost:1234", reportInterval: 15 * time.Second, pollInterval: 3 * time.Second}
+	if !reflect.DeepEqual(resolved(got), want) {
+		t.Fatalf("expected %+v, got %+v", want, resolved(got))
 	}
 }
 
 func TestResolveConfig_UsesDefaultsWhenNeitherEnvNorFlagsSet(t *testing.T) {
-	unsetEnv(t, "ADDRESS")
-	unsetEnv(t, "REPORT_INTERVAL")
-	unsetEnv(t, "POLL_INTERVAL")
+	unsetAllAgentEnv(t)
 	withAgentArgs(t, []string{})
 
 	got, err := resolveConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := &config{serverAddress: "localhost:8080", reportInterval: 10, pollInterval: 2}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected %+v, got %+v", want, got)
+	want := resolvedConfig{serverAddress: "localhost:8080", reportInterval: 10 * time.Second, pollInterval: 2 * time.Second}
+	if !reflect.DeepEqual(resolved(got), want) {
+		t.Fatalf("expected %+v, got %+v", want, resolved(got))
 	}
 }
 
@@ -131,32 +151,44 @@ func TestResolveConfig_PartialEnvMergesWithFlags(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// ADDRESS comes from env, report/poll interval come from flags
-	want := &config{serverAddress: "192.168.1.1:9090", reportInterval: 15, pollInterval: 3}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected %+v, got %+v", want, got)
+	want := resolvedConfig{serverAddress: "192.168.1.1:9090", reportInterval: 15 * time.Second, pollInterval: 3 * time.Second}
+	if !reflect.DeepEqual(resolved(got), want) {
+		t.Fatalf("expected %+v, got %+v", want, resolved(got))
 	}
 }
 
-func TestResolveConfig_EmptyEnvVarsTreatedAsUnset(t *testing.T) {
+func TestResolveConfig_EmptyAddressEnvFallsBackToFlag(t *testing.T) {
+	// documents current behavior: a declared but empty ADDRESS is replaced by the flag value
+	unsetAllAgentEnv(t)
 	t.Setenv("ADDRESS", "")
-	t.Setenv("REPORT_INTERVAL", "")
-	t.Setenv("POLL_INTERVAL", "")
-	withAgentArgs(t, []string{"-a", "localhost:1234", "-r", "15", "-p", "3"})
+	withAgentArgs(t, []string{"-a", "localhost:1234"})
 
 	got, err := resolveConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := &config{serverAddress: "localhost:1234", reportInterval: 15, pollInterval: 3}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected %+v, got %+v", want, got)
+	if got.serverAddress != "localhost:1234" {
+		t.Fatalf("expected serverAddress to fall back to flag value, got %q", got.serverAddress)
+	}
+}
+
+func TestResolveConfig_EmptyIntervalEnvReturnsError(t *testing.T) {
+	for _, key := range []string{"REPORT_INTERVAL", "POLL_INTERVAL"} {
+		t.Run(key, func(t *testing.T) {
+			unsetAllAgentEnv(t)
+			t.Setenv(key, "")
+			withAgentArgs(t, []string{})
+
+			if _, err := resolveConfig(); err == nil {
+				t.Fatalf("expected error for empty %s, got nil", key)
+			}
+		})
 	}
 }
 
 func TestResolveConfig_InvalidReportIntervalEnvReturnsError(t *testing.T) {
-	unsetEnv(t, "ADDRESS")
+	unsetAllAgentEnv(t)
 	t.Setenv("REPORT_INTERVAL", "not-a-number")
-	unsetEnv(t, "POLL_INTERVAL")
 	withAgentArgs(t, []string{})
 
 	_, err := resolveConfig()
@@ -166,8 +198,7 @@ func TestResolveConfig_InvalidReportIntervalEnvReturnsError(t *testing.T) {
 }
 
 func TestResolveConfig_InvalidPollIntervalEnvReturnsError(t *testing.T) {
-	unsetEnv(t, "ADDRESS")
-	unsetEnv(t, "REPORT_INTERVAL")
+	unsetAllAgentEnv(t)
 	t.Setenv("POLL_INTERVAL", "not-a-number")
 	withAgentArgs(t, []string{})
 
@@ -177,20 +208,32 @@ func TestResolveConfig_InvalidPollIntervalEnvReturnsError(t *testing.T) {
 	}
 }
 
-func TestResolveConfig_ZeroReportIntervalEnvIsOverriddenByFlagDefault(t *testing.T) {
-	// documents current behavior: REPORT_INTERVAL="0" parses successfully but,
-	// since cfg.reportInterval == 0, it is then overwritten by the flag's default.
-	unsetEnv(t, "ADDRESS")
-	t.Setenv("REPORT_INTERVAL", "0")
-	unsetEnv(t, "POLL_INTERVAL")
-	withAgentArgs(t, []string{})
+func TestResolveConfig_NonPositiveIntervalEnvReturnsError(t *testing.T) {
+	for _, key := range []string{"REPORT_INTERVAL", "POLL_INTERVAL"} {
+		for _, value := range []string{"0", "-1"} {
+			t.Run(key+"="+value, func(t *testing.T) {
+				unsetAllAgentEnv(t)
+				t.Setenv(key, value)
+				withAgentArgs(t, []string{})
 
-	got, err := resolveConfig()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+				if _, err := resolveConfig(); err == nil {
+					t.Fatalf("expected error for %s=%s, got nil", key, value)
+				}
+			})
+		}
 	}
-	if got.reportInterval != 10 {
-		t.Fatalf("expected reportInterval to fall back to flag default 10, got %d", got.reportInterval)
+}
+
+func TestResolveConfig_NonPositiveIntervalFlagReturnsError(t *testing.T) {
+	for _, args := range [][]string{{"-r", "0"}, {"-r", "-1"}, {"-p", "0"}, {"-p", "-1"}} {
+		t.Run(args[0]+"="+args[1], func(t *testing.T) {
+			unsetAllAgentEnv(t)
+			withAgentArgs(t, args)
+
+			if _, err := resolveConfig(); err == nil {
+				t.Fatalf("expected error for %v, got nil", args)
+			}
+		})
 	}
 }
 
@@ -212,11 +255,13 @@ func TestResolveLogLevel_UsesDefaultWhenEnvNotSet(t *testing.T) {
 	}
 }
 
-func TestResolveLogLevel_EmptyEnvVarTreatedAsUnset(t *testing.T) {
+func TestResolveLogLevel_EmptyEnvVarIsPassedThrough(t *testing.T) {
+	// a declared but empty LOG_LEVEL is not replaced by the default;
+	// zap parses "" as the info level
 	t.Setenv("LOG_LEVEL", "")
 
 	got := resolveLogLevel()
-	if got != "INFO" {
-		t.Fatalf("expected %q, got %q", "INFO", got)
+	if got != "" {
+		t.Fatalf("expected %q, got %q", "", got)
 	}
 }

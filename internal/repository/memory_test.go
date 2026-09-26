@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
@@ -227,5 +229,51 @@ func TestMemStorage_ListCounters_ReturnsIndependentCopy(t *testing.T) {
 	got, _ := s.GetCounter("PollCount")
 	if got != 1 {
 		t.Fatalf("expected internal state to stay 1 after mutating returned map, got %v", got)
+	}
+}
+
+// Run with -race: writers and readers hit the storage at the same time, so a
+// missing or wrong lock shows up as a data race. The final counter value also
+// catches lost updates in the read-modify-write of a counter.
+func TestMemStorage_ConcurrentAccessIsSafe(t *testing.T) {
+	const writers, readers, iterations = 8, 4, 500
+
+	s := NewMemStorage()
+	var wg sync.WaitGroup
+
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			one := int64(1)
+			for i := 0; i < iterations; i++ {
+				g := float64(i)
+				_ = s.Update(&models.Metrics{ID: fmt.Sprintf("gauge%d", w), MType: models.Gauge, Value: &g})
+				_ = s.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &one})
+			}
+		}(w)
+	}
+
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				_, _ = s.GetGauge("gauge0")
+				_, _ = s.GetCounter("PollCount")
+				_ = s.ListGauges()
+				_ = s.ListCounters()
+				_ = s.Snapshot()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if got, _ := s.GetCounter("PollCount"); got != writers*iterations {
+		t.Fatalf("expected PollCount=%d after concurrent increments, got %d", writers*iterations, got)
+	}
+	if got := len(s.ListGauges()); got != writers {
+		t.Fatalf("expected %d gauges, got %d", writers, got)
 	}
 }

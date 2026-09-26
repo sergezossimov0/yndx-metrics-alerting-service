@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -9,16 +8,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // decodeGzipJSONBody decompresses a gzip-encoded request body and decodes it as JSON.
@@ -52,19 +50,11 @@ func (m *metricStoreMock) ListCounters() map[string]int64 {
 	return m.counters
 }
 
-// captureLogOutput redirects the package logger into a buffer for the
-// duration of fn and returns everything it wrote.
-func captureLogOutput(fn func()) string {
-	var buf bytes.Buffer
-	core := zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), zapcore.AddSync(&buf), zapcore.DebugLevel)
-
-	orig := logger.Log
-	logger.Log = zap.New(core)
-	defer func() { logger.Log = orig }()
-
-	fn()
-
-	return buf.String()
+// newObservedLogger returns a logger that keeps entries in memory, so a test
+// can inspect what a component logged without touching any global state.
+func newObservedLogger() (*zap.Logger, *observer.ObservedLogs) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	return zap.New(core), logs
 }
 
 func TestSendMetricJSON_SendsCorrectRequest(t *testing.T) {
@@ -81,10 +71,10 @@ func TestSendMetricJSON_SendsCorrectRequest(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	a := NewAgent(ts.URL, 2, 10, repository.NewMemStorage())
+	a := NewAgent(ts.URL, 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop())
 
 	value := 12.5
-	if err := a.sendMetricJSON(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err != nil {
+	if err := a.sendMetricJSON(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -113,10 +103,10 @@ func TestSendMetricJSON_TrimsTrailingSlashFromServerAddr(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	a := NewAgent(ts.URL+"/", 2, 10, repository.NewMemStorage())
+	a := NewAgent(ts.URL+"/", 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop())
 
 	value := 1.0
-	if err := a.sendMetricJSON(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err != nil {
+	if err := a.sendMetricJSON(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -131,10 +121,10 @@ func TestSendMetricJSON_ReturnsErrorOnNonOKStatus(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	a := NewAgent(ts.URL, 2, 10, repository.NewMemStorage())
+	a := NewAgent(ts.URL, 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop())
 
 	value := 1.0
-	if err := a.sendMetricJSON(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
+	if err := a.sendMetricJSON(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
 		t.Fatal("expected error for non-200 response status")
 	}
 }
@@ -146,16 +136,16 @@ func TestSendMetricJSON_ReturnsErrorOnNetworkFailure(t *testing.T) {
 	unreachableAddr := ts.URL
 	ts.Close()
 
-	a := NewAgent(unreachableAddr, 2, 10, repository.NewMemStorage())
+	a := NewAgent(unreachableAddr, 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop())
 
 	value := 1.0
-	if err := a.sendMetricJSON(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
+	if err := a.sendMetricJSON(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
 		t.Fatal("expected error when server is unreachable")
 	}
 }
 
 func TestCollectOnceStoresMetrics(t *testing.T) {
-	a := NewAgent("http://localhost:8080", 2, 10, repository.NewMemStorage())
+	a := NewAgent("http://localhost:8080", 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop())
 
 	a.collectOnce()
 	a.collectOnce()
@@ -175,7 +165,7 @@ func TestCollectOnceStoresMetrics(t *testing.T) {
 }
 
 func TestReportOnceJSON_SendsAllMetricsAsJSON(t *testing.T) {
-	a := NewAgent("http://localhost:8080", 2, 10, repository.NewMemStorage())
+	a := NewAgent("http://localhost:8080", 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop())
 
 	g := 12.5
 	c := int64(7)
@@ -212,7 +202,7 @@ func TestReportOnceJSON_SendsAllMetricsAsJSON(t *testing.T) {
 	defer ts.Close()
 
 	a.serverAddr = ts.URL
-	a.reportOnceJSON()
+	a.reportOnceJSON(context.Background())
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -231,17 +221,16 @@ func TestReportOnceJSON_SendsAllMetricsAsJSON(t *testing.T) {
 }
 
 func TestCollectOnce_LogsErrorWhenStoreUpdateFails(t *testing.T) {
-	a := NewAgent("http://localhost:8080", 2, 10, &metricStoreMock{updateErr: errors.New("store unavailable")})
+	log, logs := newObservedLogger()
+	a := NewAgent("http://localhost:8080", 2*time.Second, 10*time.Second, &metricStoreMock{updateErr: errors.New("store unavailable")}, log)
 
-	output := captureLogOutput(func() {
-		a.collectOnce()
-	})
+	a.collectOnce()
 
-	if !strings.Contains(output, "collect gauge error") {
-		t.Fatalf("expected gauge collect error to be logged, got %q", output)
+	if logs.FilterMessage("collect gauge error").Len() == 0 {
+		t.Fatalf("expected gauge collect error to be logged, got %v", logs.All())
 	}
-	if !strings.Contains(output, "collect counter error") {
-		t.Fatalf("expected counter collect error to be logged, got %q", output)
+	if logs.FilterMessage("collect counter error").Len() == 0 {
+		t.Fatalf("expected counter collect error to be logged, got %v", logs.All())
 	}
 }
 
@@ -252,25 +241,96 @@ func TestReportOnceJSON_LogsErrorWhenSendFails(t *testing.T) {
 	unreachableAddr := ts.URL
 	ts.Close()
 
-	a := NewAgent(unreachableAddr, 2, 10, &metricStoreMock{
+	log, logs := newObservedLogger()
+	a := NewAgent(unreachableAddr, 2*time.Second, 10*time.Second, &metricStoreMock{
 		gauges:   map[string]float64{"Alloc": 1.5},
 		counters: map[string]int64{"PollCount": 1},
-	})
+	}, log)
 
-	output := captureLogOutput(func() {
-		a.reportOnceJSON()
-	})
+	a.reportOnceJSON(context.Background())
 
-	if !strings.Contains(output, "send gauge error") {
-		t.Fatalf("expected gauge send error to be logged, got %q", output)
+	if logs.FilterMessage("send gauge error").FilterLevelExact(zapcore.ErrorLevel).Len() == 0 {
+		t.Fatalf("expected gauge send error to be logged, got %v", logs.All())
 	}
-	if !strings.Contains(output, "send counter error") {
-		t.Fatalf("expected counter send error to be logged, got %q", output)
+	if logs.FilterMessage("send counter error").FilterLevelExact(zapcore.ErrorLevel).Len() == 0 {
+		t.Fatalf("expected counter send error to be logged, got %v", logs.All())
+	}
+}
+
+func TestReportOnceJSON_SendsNothingWhenContextAlreadyCancelled(t *testing.T) {
+	var mu sync.Mutex
+	requestCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestCount++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	log, logs := newObservedLogger()
+	a := NewAgent(ts.URL, 2*time.Second, 10*time.Second, &metricStoreMock{
+		gauges:   map[string]float64{"Alloc": 1.5, "HeapAlloc": 2.5},
+		counters: map[string]int64{"PollCount": 1},
+	}, log)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	a.reportOnceJSON(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if requestCount != 0 {
+		t.Fatalf("expected no requests after cancellation, got %d", requestCount)
+	}
+	if n := logs.FilterMessage("report interrupted").Len(); n != 1 {
+		t.Fatalf("expected a single 'report interrupted' entry, got %d: %v", n, logs.All())
+	}
+	if n := logs.FilterLevelExact(zapcore.ErrorLevel).Len(); n != 0 {
+		t.Fatalf("expected no error-level logs on cancellation, got %d: %v", n, logs.All())
+	}
+}
+
+func TestReportOnceJSON_StopsAfterCancellationMidReport(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	requestCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestCount++
+		mu.Unlock()
+		// simulate a shutdown signal arriving while the first metric is in flight
+		cancel()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	log, logs := newObservedLogger()
+	a := NewAgent(ts.URL, 2*time.Second, 10*time.Second, &metricStoreMock{
+		gauges:   map[string]float64{"Alloc": 1.5, "HeapAlloc": 2.5, "Sys": 3.5},
+		counters: map[string]int64{"PollCount": 1},
+	}, log)
+
+	a.reportOnceJSON(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if requestCount != 1 {
+		t.Fatalf("expected report to stop after the in-flight request, got %d requests", requestCount)
+	}
+	if n := logs.FilterMessage("report interrupted").Len(); n != 1 {
+		t.Fatalf("expected a single 'report interrupted' entry, got %d: %v", n, logs.All())
+	}
+	if n := logs.FilterLevelExact(zapcore.ErrorLevel).Len(); n != 0 {
+		t.Fatalf("expected no error-level logs on cancellation, got %d: %v", n, logs.All())
 	}
 }
 
 func TestAgent_Run_StopsWhenContextIsCancelled(t *testing.T) {
-	a := NewAgent("http://localhost:8080", 1, 1, &metricStoreMock{gauges: map[string]float64{}, counters: map[string]int64{}})
+	a := NewAgent("http://localhost:8080", time.Second, time.Second, &metricStoreMock{gauges: map[string]float64{}, counters: map[string]int64{}}, zap.NewNop())
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -300,15 +360,8 @@ func TestAgent_Run_CollectsAndReportsBeforeStopping(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	// Built directly (bypassing NewAgent) so poll/report intervals can be
-	// sub-second, keeping the test fast and deterministic.
-	a := &Agent{
-		store:          repository.NewMemStorage(),
-		serverAddr:     ts.URL,
-		pollInterval:   15 * time.Millisecond,
-		reportInterval: 25 * time.Millisecond,
-		client:         &http.Client{Timeout: 3 * time.Second},
-	}
+	// sub-second intervals keep the test fast and deterministic
+	a := NewAgent(ts.URL, 15*time.Millisecond, 25*time.Millisecond, repository.NewMemStorage(), zap.NewNop())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
 	defer cancel()

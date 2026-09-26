@@ -4,6 +4,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestNormalizeHelpArg_ReplacesLongHelpFlagWithShort(t *testing.T) {
@@ -57,6 +58,24 @@ func unsetAllServerEnv(t *testing.T) {
 	}
 }
 
+// resolvedConfig holds only the resolved values, so expectations do not
+// depend on the internal isSet markers of intervalValid and restoreValid.
+type resolvedConfig struct {
+	serverAddress   string
+	storeInterval   time.Duration
+	fileStoragePath string
+	restore         bool
+}
+
+func resolved(c *config) resolvedConfig {
+	return resolvedConfig{
+		serverAddress:   c.serverAddress,
+		storeInterval:   c.storeInterval.interval,
+		fileStoragePath: c.fileStoragePath,
+		restore:         c.restore.isRestore,
+	}
+}
+
 func TestResolveConfig_UsesDefaultsWhenNeitherEnvNorFlagsSet(t *testing.T) {
 	unsetAllServerEnv(t)
 	withArgs(t, []string{})
@@ -65,9 +84,9 @@ func TestResolveConfig_UsesDefaultsWhenNeitherEnvNorFlagsSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := &config{serverAddress: "localhost:8080", storeInterval: 300, fileStoragePath: "metrics-db.json", restore: true}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected %+v, got %+v", want, got)
+	want := resolvedConfig{serverAddress: "localhost:8080", storeInterval: 300 * time.Second, fileStoragePath: "metrics-db.json", restore: true}
+	if !reflect.DeepEqual(resolved(got), want) {
+		t.Fatalf("expected %+v, got %+v", want, resolved(got))
 	}
 }
 
@@ -82,14 +101,14 @@ func TestResolveConfig_EnvVarsTakePrecedenceOverFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := &config{
+	want := resolvedConfig{
 		serverAddress:   "192.168.1.1:9090",
-		storeInterval:   60,
+		storeInterval:   60 * time.Second,
 		fileStoragePath: "/data/env-metrics.json",
 		restore:         false,
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected %+v, got %+v", want, got)
+	if !reflect.DeepEqual(resolved(got), want) {
+		t.Fatalf("expected %+v, got %+v", want, resolved(got))
 	}
 }
 
@@ -101,59 +120,80 @@ func TestResolveConfig_UsesFlagsWhenEnvNotSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := &config{
+	want := resolvedConfig{
 		serverAddress:   "localhost:1234",
-		storeInterval:   120,
+		storeInterval:   120 * time.Second,
 		fileStoragePath: "/data/flag-metrics.json",
 		restore:         false,
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected %+v, got %+v", want, got)
+	if !reflect.DeepEqual(resolved(got), want) {
+		t.Fatalf("expected %+v, got %+v", want, resolved(got))
 	}
 }
 
-func TestResolveConfig_EmptyEnvVarsTreatedAsUnset(t *testing.T) {
+func TestResolveConfig_EmptyStringEnvVarsFallBackToFlags(t *testing.T) {
+	// documents current behavior: declared but empty ADDRESS and FILE_STORAGE_PATH
+	// are replaced by flag values
+	unsetAllServerEnv(t)
 	t.Setenv("ADDRESS", "")
-	t.Setenv("STORE_INTERVAL", "")
 	t.Setenv("FILE_STORAGE_PATH", "")
-	t.Setenv("RESTORE", "")
-	withArgs(t, []string{"-a", "localhost:1234", "-i", "120", "-f", "/data/flag-metrics.json", "-r=false"})
+	withArgs(t, []string{"-a", "localhost:1234", "-f", "/data/flag-metrics.json"})
 
 	got, err := resolveConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := &config{
-		serverAddress:   "localhost:1234",
-		storeInterval:   120,
-		fileStoragePath: "/data/flag-metrics.json",
-		restore:         false,
+	if got.serverAddress != "localhost:1234" {
+		t.Fatalf("expected serverAddress to fall back to flag value, got %q", got.serverAddress)
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("expected %+v, got %+v", want, got)
+	if got.fileStoragePath != "/data/flag-metrics.json" {
+		t.Fatalf("expected fileStoragePath to fall back to flag value, got %q", got.fileStoragePath)
+	}
+}
+
+func TestResolveConfig_EmptyParsedEnvVarsReturnError(t *testing.T) {
+	for _, key := range []string{"STORE_INTERVAL", "RESTORE"} {
+		t.Run(key, func(t *testing.T) {
+			unsetAllServerEnv(t)
+			t.Setenv(key, "")
+			withArgs(t, []string{})
+
+			if _, err := resolveConfig(); err == nil {
+				t.Fatalf("expected error for empty %s, got nil", key)
+			}
+		})
 	}
 }
 
 func TestResolveConfig_ZeroStoreIntervalEnvIsHonoredNotOverriddenByFlagDefault(t *testing.T) {
-	unsetEnv(t, "ADDRESS")
+	unsetAllServerEnv(t)
 	t.Setenv("STORE_INTERVAL", "0")
-	unsetEnv(t, "FILE_STORAGE_PATH")
-	unsetEnv(t, "RESTORE")
 	withArgs(t, []string{})
 
 	got, err := resolveConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.storeInterval != 0 {
-		t.Fatalf("expected STORE_INTERVAL=0 (synchronous writes) to be honored, got %d", got.storeInterval)
+	if got.storeInterval.interval != 0 {
+		t.Fatalf("expected STORE_INTERVAL=0 (synchronous writes) to be honored, got %v", got.storeInterval.interval)
+	}
+}
+
+func TestResolveConfig_ZeroStoreIntervalFlagIsHonored(t *testing.T) {
+	unsetAllServerEnv(t)
+	withArgs(t, []string{"-i", "0"})
+
+	got, err := resolveConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.storeInterval.interval != 0 {
+		t.Fatalf("expected -i 0 (synchronous writes) to be honored, got %v", got.storeInterval.interval)
 	}
 }
 
 func TestResolveConfig_FalseRestoreEnvIsHonoredNotOverriddenByFlagDefault(t *testing.T) {
-	unsetEnv(t, "ADDRESS")
-	unsetEnv(t, "STORE_INTERVAL")
-	unsetEnv(t, "FILE_STORAGE_PATH")
+	unsetAllServerEnv(t)
 	t.Setenv("RESTORE", "false")
 	withArgs(t, []string{})
 
@@ -161,16 +201,14 @@ func TestResolveConfig_FalseRestoreEnvIsHonoredNotOverriddenByFlagDefault(t *tes
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.restore != false {
-		t.Fatalf("expected RESTORE=false to be honored (default flag is true), got %v", got.restore)
+	if got.restore.isRestore {
+		t.Fatalf("expected RESTORE=false to be honored (default flag is true), got %v", got.restore.isRestore)
 	}
 }
 
 func TestResolveConfig_InvalidStoreIntervalEnvReturnsError(t *testing.T) {
-	unsetEnv(t, "ADDRESS")
+	unsetAllServerEnv(t)
 	t.Setenv("STORE_INTERVAL", "not-a-number")
-	unsetEnv(t, "FILE_STORAGE_PATH")
-	unsetEnv(t, "RESTORE")
 	withArgs(t, []string{})
 
 	_, err := resolveConfig()
@@ -180,10 +218,8 @@ func TestResolveConfig_InvalidStoreIntervalEnvReturnsError(t *testing.T) {
 }
 
 func TestResolveConfig_NegativeStoreIntervalEnvReturnsError(t *testing.T) {
-	unsetEnv(t, "ADDRESS")
+	unsetAllServerEnv(t)
 	t.Setenv("STORE_INTERVAL", "-1")
-	unsetEnv(t, "FILE_STORAGE_PATH")
-	unsetEnv(t, "RESTORE")
 	withArgs(t, []string{})
 
 	_, err := resolveConfig()
@@ -193,10 +229,7 @@ func TestResolveConfig_NegativeStoreIntervalEnvReturnsError(t *testing.T) {
 }
 
 func TestResolveConfig_NegativeStoreIntervalFlagReturnsError(t *testing.T) {
-	unsetEnv(t, "ADDRESS")
-	unsetEnv(t, "STORE_INTERVAL")
-	unsetEnv(t, "FILE_STORAGE_PATH")
-	unsetEnv(t, "RESTORE")
+	unsetAllServerEnv(t)
 	withArgs(t, []string{"-i", "-5"})
 
 	_, err := resolveConfig()
@@ -206,9 +239,7 @@ func TestResolveConfig_NegativeStoreIntervalFlagReturnsError(t *testing.T) {
 }
 
 func TestResolveConfig_InvalidRestoreEnvReturnsError(t *testing.T) {
-	unsetEnv(t, "ADDRESS")
-	unsetEnv(t, "STORE_INTERVAL")
-	unsetEnv(t, "FILE_STORAGE_PATH")
+	unsetAllServerEnv(t)
 	t.Setenv("RESTORE", "not-a-bool")
 	withArgs(t, []string{})
 
@@ -236,11 +267,13 @@ func TestResolveLogLevel_UsesDefaultWhenEnvNotSet(t *testing.T) {
 	}
 }
 
-func TestResolveLogLevel_EmptyEnvVarTreatedAsUnset(t *testing.T) {
+func TestResolveLogLevel_EmptyEnvVarIsPassedThrough(t *testing.T) {
+	// a declared but empty LOG_LEVEL is not replaced by the default;
+	// zap parses "" as the info level
 	t.Setenv("LOG_LEVEL", "")
 
 	got := resolveLogLevel()
-	if got != "INFO" {
-		t.Fatalf("expected %q, got %q", "INFO", got)
+	if got != "" {
+		t.Fatalf("expected %q, got %q", "", got)
 	}
 }

@@ -4,34 +4,36 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
 	"go.uber.org/zap"
 )
 
-func WithLogging(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+// WithLogging returns a middleware that writes an access log entry for every request.
+func WithLogging(log *zap.Logger) func(http.Handler) http.Handler {
+	return func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
 
-		responseData := &responseData{
-			status: 0,
-			size:   0,
-		}
-		lw := loggingResponseWriter{
-			ResponseWriter: w, // встраиваем оригинальный http.ResponseWriter
-			responseData:   responseData,
-		}
-		h.ServeHTTP(&lw, r) // внедряем реализацию http.ResponseWriter
+			responseData := &responseData{
+				status: 0,
+				size:   0,
+			}
+			lw := loggingResponseWriter{
+				ResponseWriter: w, // встраиваем оригинальный http.ResponseWriter
+				responseData:   responseData,
+			}
+			h.ServeHTTP(&lw, r) // внедряем реализацию http.ResponseWriter
 
-		duration := time.Since(start)
+			duration := time.Since(start)
 
-		logger.Log.Info("HTTP request",
-			zap.String("uri", r.RequestURI),
-			zap.String("method", r.Method),
-			zap.Duration("duration", duration),
-			zap.Int("status", responseData.status), // получаем перехваченный код статуса ответа
-			zap.Int("size", responseData.size),     // получаем перехваченный размер ответа
-		)
-	})
+			log.Info("HTTP request",
+				zap.String("uri", r.RequestURI),
+				zap.String("method", r.Method),
+				zap.Duration("duration", duration),
+				zap.Int("status", responseData.status), // получаем перехваченный код статуса ответа
+				zap.Int("size", responseData.size),     // получаем перехваченный размер ответа
+			)
+		})
+	}
 }
 
 type (

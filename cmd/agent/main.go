@@ -6,8 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/agent"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
@@ -17,8 +20,8 @@ import (
 
 type config struct {
 	serverAddress  string
-	reportInterval int
-	pollInterval   int
+	reportInterval intervalValid
+	pollInterval   intervalValid
 }
 
 func main() {
@@ -31,51 +34,90 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := logger.Initialize(resolveLogLevel()); err != nil {
+	log, err := logger.New(resolveLogLevel())
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer logger.Log.Sync()
+	defer log.Sync()
 
 	baseURL := normalizeServerAddr(cfg.serverAddress)
-	logger.Log.Info("agent starting",
+	log.Info("agent starting",
 		zap.String("address", baseURL),
-		zap.Int("poll_interval", cfg.pollInterval),
-		zap.Int("report_interval", cfg.reportInterval),
+		zap.Duration("poll_interval", cfg.pollInterval.interval),
+		zap.Duration("report_interval", cfg.reportInterval.interval),
 	)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	storage := repository.NewMemStorage()
-	newAgent := agent.NewAgent(baseURL, cfg.pollInterval, cfg.reportInterval, storage)
-	newAgent.Run(context.Background())
+	newAgent := agent.NewAgent(baseURL, cfg.pollInterval.interval, cfg.reportInterval.interval, storage,
+		log.With(zap.String("component", "agent")))
+	newAgent.Run(ctx)
+
+	log.Info("agent stopped")
+}
+
+// --- config resolution ---
+
+type intervalValid struct {
+	interval time.Duration
+	isSet    bool
+}
+
+func (i *intervalValid) Set(value string) error {
+	intervalInt, err := strconv.Atoi(value)
+	if err != nil {
+		return fmt.Errorf("error parsing interval: %w", err)
+	}
+
+	if err := i.UpdateToSecond(intervalInt); err != nil {
+		return err
+	}
+	i.isSet = true
+	return nil
+}
+
+func (i *intervalValid) UpdateToSecond(sec int) error {
+	if sec <= 0 {
+		return fmt.Errorf("interval must be > 0, got %d", sec)
+	}
+	i.interval = time.Duration(sec) * time.Second
+	return nil
+}
+
+func (c config) validation() bool {
+	return c.serverAddress != "" && c.reportInterval.isSet && c.pollInterval.isSet
 }
 
 func resolveConfig() (*config, error) {
 	cfg := &config{}
 
 	// environment variable takes precedence over command line argument
-	var errConvert error
-	envServerAddr := os.Getenv("ADDRESS")
-	if envServerAddr != "" {
+	if envServerAddr, ok := os.LookupEnv("ADDRESS"); ok {
 		cfg.serverAddress = envServerAddr
 	}
 
-	envReportInterval := os.Getenv("REPORT_INTERVAL")
-	if envReportInterval != "" {
-		cfg.reportInterval, errConvert = strconv.Atoi(envReportInterval)
-	}
-	if errConvert != nil {
-		return nil, errors.New("Error parsing env REPORT_INTERVAL:" + errConvert.Error())
-	}
-
-	envPollInterval := os.Getenv("POLL_INTERVAL")
-	if envPollInterval != "" {
-		cfg.pollInterval, errConvert = strconv.Atoi(envPollInterval)
-	}
-	if errConvert != nil {
-		return nil, errors.New("Error parsing env POLL_INTERVAL:" + errConvert.Error())
+	var reportValid = intervalValid{}
+	cfg.reportInterval = reportValid
+	if v, ok := os.LookupEnv("REPORT_INTERVAL"); ok {
+		err := cfg.reportInterval.Set(v)
+		if err != nil {
+			return nil, errors.New("error parsing env REPORT_INTERVAL:" + err.Error())
+		}
 	}
 
-	if cfg.serverAddress != "" && cfg.reportInterval > 0 && cfg.pollInterval > 0 {
+	var pollValid = intervalValid{}
+	cfg.pollInterval = pollValid
+	if v, ok := os.LookupEnv("POLL_INTERVAL"); ok {
+		err := cfg.pollInterval.Set(v)
+		if err != nil {
+			return nil, errors.New("error parsing env POLL_INTERVAL:" + err.Error())
+		}
+	}
+
+	if cfg.validation() {
 		return cfg, nil
 	}
 
@@ -100,12 +142,18 @@ func resolveConfig() (*config, error) {
 		cfg.serverAddress = *serverAddr
 	}
 
-	if cfg.reportInterval == 0 {
-		cfg.reportInterval = *reportInterval
+	if !cfg.reportInterval.isSet {
+		err := cfg.reportInterval.UpdateToSecond(*reportInterval)
+		if err != nil {
+			return nil, errors.New("failed to set REPORT_INTERVAL from flag:" + err.Error())
+		}
 	}
 
-	if cfg.pollInterval == 0 {
-		cfg.pollInterval = *pollInterval
+	if !cfg.pollInterval.isSet {
+		err := cfg.pollInterval.UpdateToSecond(*pollInterval)
+		if err != nil {
+			return nil, errors.New("failed to set POLL_INTERVAL from flag:" + err.Error())
+		}
 	}
 
 	return cfg, nil
@@ -123,7 +171,7 @@ func normalizeHelpArg(args []string) []string {
 }
 
 func resolveLogLevel() string {
-	if envLogLevel := os.Getenv("LOG_LEVEL"); envLogLevel != "" {
+	if envLogLevel, ok := os.LookupEnv("LOG_LEVEL"); ok {
 		return envLogLevel
 	}
 	return "INFO"

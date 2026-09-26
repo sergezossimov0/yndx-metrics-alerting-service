@@ -14,16 +14,23 @@ import (
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/usecase"
+	"go.uber.org/zap"
 )
 
 func newTestHandler() (http.Handler, *repository.MemStorage) {
+	return newTestHandlerWithLogger(zap.NewNop())
+}
+
+// newTestHandlerWithLogger builds the router with the given logger, so a test
+// can inspect what the handlers logged.
+func newTestHandlerWithLogger(log *zap.Logger) (http.Handler, *repository.MemStorage) {
 	store := repository.NewMemStorage()
 	uc := usecase.NewMetricUpdate(store)
 	readUC := usecase.NewMetricRead(store)
 	r := chi.NewRouter()
-	r.Post("/update/", UpdateMetricsJSONHandler(&uc))
-	r.Post("/value/", GetMetricValueJSONHandler(&readUC))
-	r.Post("/update/{type}/{name}/{value}", UpdateMetricsHandler(&uc))
+	r.Post("/update/", UpdateMetricsJSONHandler(&uc, log))
+	r.Post("/value/", GetMetricValueJSONHandler(&readUC, log))
+	r.Post("/update/{type}/{name}/{value}", UpdateMetricsHandler(&uc, log))
 	r.Get("/value/{type}/{name}", GetMetricValueHandler(&readUC))
 	r.Get("/", ListMetricsHandler(&readUC))
 	return r, store
@@ -299,7 +306,7 @@ func (m *metricUpdaterMock) UpdateMetric(_ *models.Metrics) error {
 func TestUpdateMetricsJSONHandler_ReturnsInternalServerErrorWhenUpdaterFails(t *testing.T) {
 	updater := &metricUpdaterMock{err: errors.New("store unavailable")}
 	r := chi.NewRouter()
-	r.Post("/update/", UpdateMetricsJSONHandler(updater))
+	r.Post("/update/", UpdateMetricsJSONHandler(updater, zap.NewNop()))
 
 	value := 1.0
 	raw, _ := json.Marshal(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value})
