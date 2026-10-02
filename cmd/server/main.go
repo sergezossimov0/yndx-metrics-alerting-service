@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -18,9 +18,14 @@ import (
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/usecase"
 	"go.uber.org/zap"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-const shutdownTimeout = 5 * time.Second
+const (
+	shutdownTimeout = 5 * time.Second
+	pingTimeout     = 2 * time.Second
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -46,6 +51,12 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	db, err := sql.Open("pgx", cfg.dbConnection)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
 
 	store := repository.NewMemStorage()
 	snapshot := repository.NewSnapshot(cfg.fileStoragePath, cfg.storeInterval.interval, store,
@@ -75,6 +86,7 @@ func run() error {
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetricsHandler(&uc, httpLog))
 	r.Get("/value/{type}/{name}", handler.GetMetricValueHandler(&readUC))
 	r.Get("/", handler.ListMetricsHandler(&readUC))
+	r.Get("/ping", handler.PingHandler(db, pingTimeout, httpLog))
 
 	srv := &http.Server{
 		Addr:    cfg.serverAddress,
@@ -114,136 +126,6 @@ func normalizeHelpArg(args []string) []string {
 		}
 	}
 	return normalized
-}
-
-// ---- Configuration parsing ----
-
-type intervalValid struct {
-	interval time.Duration
-	isSet    bool
-}
-
-type restoreValid struct {
-	isRestore bool
-	isSet     bool
-}
-
-type config struct {
-	serverAddress   string
-	storeInterval   intervalValid // default 300 seconds, 0 means synchronous writes, negative is invalid
-	fileStoragePath string
-	restore         restoreValid
-}
-
-func (i *intervalValid) Set(value string) error {
-	intervalInt, err := strconv.Atoi(value)
-	if err != nil {
-		return fmt.Errorf("error parsing interval: %w", err)
-	}
-
-	if err := i.UpdateToSecond(intervalInt); err != nil {
-		return err
-	}
-	i.isSet = true
-	return nil
-}
-
-func (i *intervalValid) UpdateToSecond(sec int) error {
-	if sec < 0 {
-		return fmt.Errorf("interval must be >= 0, got %d", sec)
-	}
-	i.interval = time.Duration(sec) * time.Second
-	return nil
-}
-
-func (r *restoreValid) Set(value string) error {
-	restoreBool, err := strconv.ParseBool(value)
-	if err != nil {
-		return fmt.Errorf("error parsing restore: %w", err)
-	}
-	r.isRestore = restoreBool
-	r.isSet = true
-	return nil
-}
-
-func (c config) validation() bool {
-	return c.serverAddress != "" && c.storeInterval.isSet && c.fileStoragePath != "" && c.restore.isSet
-}
-
-// ---- resolveConfig reads configuration from environment variables and command line arguments.
-
-func resolveConfig() (*config, error) {
-	cfg := &config{}
-
-	// environment variables take precedence over command line arguments
-	if envServerAddr, ok := os.LookupEnv("ADDRESS"); ok {
-		cfg.serverAddress = envServerAddr
-	}
-
-	// STORE_INTERVAL: default 300 seconds, 0 means synchronous writes, negative is invalid
-	storeIntervalValid := intervalValid{}
-	cfg.storeInterval = storeIntervalValid
-	if envStoreInterval, ok := os.LookupEnv("STORE_INTERVAL"); ok {
-		err := cfg.storeInterval.Set(envStoreInterval)
-		if err != nil {
-			return nil, errors.New("failed to set STORE_INTERVAL:" + err.Error())
-		}
-	}
-
-	if envFileStoragePath, ok := os.LookupEnv("FILE_STORAGE_PATH"); ok {
-		cfg.fileStoragePath = envFileStoragePath
-	}
-
-	rv := restoreValid{}
-	cfg.restore = rv
-	if envRestore, ok := os.LookupEnv("RESTORE"); ok {
-		err := cfg.restore.Set(envRestore)
-		if err != nil {
-			return nil, errors.New("failed to set RESTORE:" + err.Error())
-		}
-	}
-
-	if cfg.validation() {
-		return cfg, nil
-	}
-
-	// parse command line arguments
-	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "Server startup options:")
-		fs.PrintDefaults()
-	}
-
-	serverAddr := fs.String("a", "localhost:8080", "HTTP server address")
-	storeInterval := fs.Int("i", 300, "store interval in seconds (0 makes writes synchronous)")
-	fileStoragePath := fs.String("f", "metrics-db.json", "file storage path")
-	restoreFlag := fs.Bool("r", true, "restore previously saved metrics on startup")
-
-	if err := fs.Parse(normalizeHelpArg(os.Args[1:])); err != nil {
-		return nil, err
-	}
-
-	if cfg.serverAddress == "" {
-		cfg.serverAddress = *serverAddr
-	}
-	if !cfg.storeInterval.isSet {
-		err := cfg.storeInterval.UpdateToSecond(*storeInterval)
-		if err != nil {
-			return nil, errors.New("failed to set STORE_INTERVAL from flag:" + err.Error())
-		}
-	}
-
-	if cfg.fileStoragePath == "" {
-		cfg.fileStoragePath = *fileStoragePath
-	}
-
-	if !cfg.restore.isSet {
-		cfg.restore.isRestore = *restoreFlag
-	}
-
-	return cfg, nil
 }
 
 func resolveLogLevel() string {
