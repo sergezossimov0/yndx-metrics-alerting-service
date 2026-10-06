@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	shutdownTimeout = 5 * time.Second
-	pingTimeout     = 2 * time.Second
+	shutdownTimeout     = 5 * time.Second
+	dbConnectionTimeout = 2 * time.Second
 )
 
 func main() {
@@ -52,26 +52,43 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	db, err := sql.Open("pgx", cfg.dbConnection)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
+	var store usecase.MetricReadStore
+	var updateStore usecase.MetricUpdateStore
 
-	store := repository.NewMemStorage()
-	snapshot := repository.NewSnapshot(cfg.fileStoragePath, cfg.storeInterval.interval, store,
-		cfg.restore.isRestore, log.With(zap.String("component", "snapshot")))
-
-	var updateStore usecase.MetricUpdateStore = store
+	var db *sql.DB
 	var snapshotDone chan struct{}
-	if cfg.storeInterval.interval == 0 {
-		updateStore = snapshot
+	if cfg.dbConnection != "" {
+		db, err = sql.Open("pgx", cfg.dbConnection)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		dbStore, err := repository.NewPostgresStorage(ctx, db, dbConnectionTimeout, log.With(zap.String("component", "postgres")))
+		if err != nil {
+			return err
+		}
+
+		store = dbStore
+		updateStore = dbStore
 	} else {
-		snapshotDone = make(chan struct{})
-		go func() {
-			defer close(snapshotDone)
-			snapshot.Run(ctx)
-		}()
+		memStore := repository.NewMemStorage()
+
+		// config file storage path and restore flag
+		snapshot := repository.NewSnapshot(cfg.fileStoragePath, cfg.storeInterval.interval, memStore,
+			cfg.restore.isRestore, log.With(zap.String("component", "snapshot")))
+
+		updateStore = memStore
+		if cfg.storeInterval.interval == 0 {
+			updateStore = snapshot
+		} else {
+			snapshotDone = make(chan struct{})
+			go func() {
+				defer close(snapshotDone)
+				snapshot.Run(ctx)
+			}()
+		}
+		store = memStore
 	}
 
 	uc := usecase.NewMetricUpdate(updateStore)
@@ -86,7 +103,7 @@ func run() error {
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetricsHandler(&uc, httpLog))
 	r.Get("/value/{type}/{name}", handler.GetMetricValueHandler(&readUC))
 	r.Get("/", handler.ListMetricsHandler(&readUC))
-	r.Get("/ping", handler.PingHandler(db, pingTimeout, httpLog))
+	r.Get("/ping", handler.PingHandler(db, dbConnectionTimeout, httpLog))
 
 	srv := &http.Server{
 		Addr:    cfg.serverAddress,

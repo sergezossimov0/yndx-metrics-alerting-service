@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,7 +27,7 @@ func TestUpdateMetricsHandler_SuccessGauge(t *testing.T) {
 	if body, _ := io.ReadAll(res.Body); string(body) != "OK" {
 		t.Fatalf("expected body OK, got %q", string(body))
 	}
-	if got, ok := store.GetGauge("Alloc"); !ok || got != 123.45 {
+	if got, ok := store.GetGauge(context.Background(), "Alloc"); !ok || got != 123.45 {
 		t.Fatalf("expected gauge Alloc=123.45, got %v (present=%v)", got, ok)
 	}
 }
@@ -40,7 +41,7 @@ func TestUpdateMetricsHandler_SuccessCounterAccumulate(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, res.Code)
 	}
-	if got, ok := store.GetCounter("PollCount"); !ok || got != 3 {
+	if got, ok := store.GetCounter(context.Background(), "PollCount"); !ok || got != 3 {
 		t.Fatalf("expected counter PollCount=3, got %v (present=%v)", got, ok)
 	}
 }

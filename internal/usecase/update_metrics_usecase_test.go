@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -12,7 +13,7 @@ type updateMetricStoreMock struct {
 	updateCalled int
 }
 
-func (m *updateMetricStoreMock) Update(metric *models.Metrics) error {
+func (m *updateMetricStoreMock) Update(_ context.Context, metric *models.Metrics) error {
 	m.updateCalled++
 	return m.updateErr
 }
@@ -24,7 +25,7 @@ func TestMetricUpdate_UpdateMetric_CallsStoreUpdate(t *testing.T) {
 	g := 1.5
 	metric := &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g}
 
-	if err := uc.UpdateMetric(metric); err != nil {
+	if err := uc.UpdateMetric(context.Background(), metric); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
@@ -41,7 +42,7 @@ func TestMetricUpdate_UpdateMetric_ReturnsStoreError(t *testing.T) {
 	g := 1.5
 	metric := &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g}
 
-	err := uc.UpdateMetric(metric)
+	err := uc.UpdateMetric(context.Background(), metric)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

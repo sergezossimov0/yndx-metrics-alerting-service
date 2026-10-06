@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -66,7 +67,7 @@ func TestUpdateMetricsJSONHandler_SuccessGauge(t *testing.T) {
 		t.Fatalf("expected body OK, got %q", string(body))
 	}
 
-	gauges := store.ListGauges()
+	gauges := store.ListGauges(context.Background())
 	if got := gauges["Alloc"]; got != 123.45 {
 		t.Fatalf("expected gauge Alloc=123.45, got %v", got)
 	}
@@ -84,7 +85,7 @@ func TestUpdateMetricsJSONHandler_SuccessCounterAccumulate(t *testing.T) {
 		t.Fatalf("expected status 200 for both requests, got %d and %d", res1.Code, res2.Code)
 	}
 
-	counters := store.ListCounters()
+	counters := store.ListCounters(context.Background())
 	if got := counters["PollCount"]; got != 3 {
 		t.Fatalf("expected counter PollCount=3, got %d", got)
 	}
@@ -195,7 +196,7 @@ func TestUpdateMetricsJSONHandler_RejectsIncompleteMetricAndDoesNotStoreIt(t *te
 		t.Fatalf("expected only the validation error in the body, got %q", string(body))
 	}
 
-	if _, ok := store.ListGauges()["Alloc"]; ok {
+	if _, ok := store.ListGauges(context.Background())["Alloc"]; ok {
 		t.Fatal("expected metric not to be stored when validation fails")
 	}
 }
@@ -214,7 +215,7 @@ func TestUpdateMetricsJSONHandler_RejectsUnknownMetricTypeAndDoesNotStoreIt(t *t
 		t.Fatalf("expected only the validation error in the body, got %q", string(body))
 	}
 
-	if _, ok := store.ListGauges()["Alloc"]; ok {
+	if _, ok := store.ListGauges(context.Background())["Alloc"]; ok {
 		t.Fatal("expected metric not to be stored when validation fails")
 	}
 }
@@ -234,7 +235,7 @@ func TestUpdateMetricsJSONHandler_RejectsMissingNameAndDoesNotStoreIt(t *testing
 		t.Fatalf("expected only the validation error in the body, got %q", string(body))
 	}
 
-	if _, ok := store.ListGauges()[""]; ok {
+	if _, ok := store.ListGauges(context.Background())[""]; ok {
 		t.Fatal("expected metric not to be stored when validation fails")
 	}
 }
@@ -299,7 +300,7 @@ type metricUpdaterMock struct {
 	err error
 }
 
-func (m *metricUpdaterMock) UpdateMetric(_ *models.Metrics) error {
+func (m *metricUpdaterMock) UpdateMetric(_ context.Context, _ *models.Metrics) error {
 	return m.err
 }
 

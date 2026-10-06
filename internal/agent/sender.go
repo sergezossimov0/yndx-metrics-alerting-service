@@ -21,9 +21,9 @@ import (
 const shutdownFlushTimeout = 5 * time.Second
 
 type metricStore interface {
-	Update(metric *models.Metrics) error
-	ListGauges() map[string]float64
-	ListCounters() map[string]int64
+	Update(ctx context.Context, metric *models.Metrics) error
+	ListGauges(ctx context.Context) map[string]float64
+	ListCounters(ctx context.Context) map[string]int64
 }
 
 type Agent struct {
@@ -48,7 +48,7 @@ func NewAgent(serverAddr string, pollInterval, reportInterval time.Duration, sto
 	}
 }
 
-func (a *Agent) collectOnce() {
+func (a *Agent) collectOnce(ctx context.Context) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
@@ -85,13 +85,13 @@ func (a *Agent) collectOnce() {
 
 	for name, value := range metrics {
 		gaugeValue := value
-		if err := a.store.Update(&models.Metrics{ID: name, MType: models.Gauge, Value: &gaugeValue}); err != nil {
+		if err := a.store.Update(ctx, &models.Metrics{ID: name, MType: models.Gauge, Value: &gaugeValue}); err != nil {
 			a.log.Error("collect gauge error", zap.String("metric", name), zap.Error(err))
 		}
 	}
 
 	pollInc := int64(1)
-	if err := a.store.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &pollInc}); err != nil {
+	if err := a.store.Update(ctx, &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &pollInc}); err != nil {
 		a.log.Error("collect counter error", zap.String("metric", "PollCount"), zap.Error(err))
 	}
 }
@@ -132,8 +132,8 @@ func (a *Agent) sendMetricJSON(ctx context.Context, body *models.Metrics) error 
 }
 
 func (a *Agent) reportOnceJSON(ctx context.Context) {
-	gauges := a.store.ListGauges()
-	counters := a.store.ListCounters()
+	gauges := a.store.ListGauges(ctx)
+	counters := a.store.ListCounters(ctx)
 
 	for name, value := range gauges {
 		if ctx.Err() != nil {
@@ -185,7 +185,7 @@ func (a *Agent) Run(ctx context.Context) {
 	defer reportTicker.Stop()
 
 	// first immediate collection
-	a.collectOnce()
+	a.collectOnce(ctx)
 
 	for {
 		select {
@@ -195,7 +195,7 @@ func (a *Agent) Run(ctx context.Context) {
 			cancel()
 			return
 		case <-pollTicker.C:
-			a.collectOnce()
+			a.collectOnce(ctx)
 		case <-reportTicker.C:
 			a.reportOnceJSON(ctx)
 		}

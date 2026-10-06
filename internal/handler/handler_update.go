@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -19,7 +20,7 @@ var (
 )
 
 type MetricUpdater interface {
-	UpdateMetric(metric *models.Metrics) error
+	UpdateMetric(ctx context.Context, metric *models.Metrics) error
 }
 
 func UpdateMetricsJSONHandler(updater MetricUpdater, log *zap.Logger) http.HandlerFunc {
@@ -42,7 +43,8 @@ func UpdateMetricsJSONHandler(updater MetricUpdater, log *zap.Logger) http.Handl
 			return
 		}
 
-		if err := updater.UpdateMetric(&req); err != nil {
+		ctx := r.Context()
+		if err := updater.UpdateMetric(ctx, &req); err != nil {
 			// server error: logged, the client only gets a generic message
 			log.Error(msgFailedUpdateMetric,
 				zap.String("metric", req.ID), zap.String("type", req.MType), zap.Error(err))

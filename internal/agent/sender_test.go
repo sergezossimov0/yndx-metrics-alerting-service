@@ -38,15 +38,15 @@ type metricStoreMock struct {
 	counters  map[string]int64
 }
 
-func (m *metricStoreMock) Update(metric *models.Metrics) error {
+func (m *metricStoreMock) Update(_ context.Context, metric *models.Metrics) error {
 	return m.updateErr
 }
 
-func (m *metricStoreMock) ListGauges() map[string]float64 {
+func (m *metricStoreMock) ListGauges(_ context.Context) map[string]float64 {
 	return m.gauges
 }
 
-func (m *metricStoreMock) ListCounters() map[string]int64 {
+func (m *metricStoreMock) ListCounters(_ context.Context) map[string]int64 {
 	return m.counters
 }
 
@@ -147,11 +147,11 @@ func TestSendMetricJSON_ReturnsErrorOnNetworkFailure(t *testing.T) {
 func TestCollectOnceStoresMetrics(t *testing.T) {
 	a := NewAgent("http://localhost:8080", 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop())
 
-	a.collectOnce()
-	a.collectOnce()
+	a.collectOnce(context.Background())
+	a.collectOnce(context.Background())
 
-	gauges := a.store.ListGauges()
-	counters := a.store.ListCounters()
+	gauges := a.store.ListGauges(context.Background())
+	counters := a.store.ListCounters(context.Background())
 
 	if _, ok := gauges["Alloc"]; !ok {
 		t.Fatalf("expected Alloc gauge to be collected")
@@ -169,8 +169,8 @@ func TestReportOnceJSON_SendsAllMetricsAsJSON(t *testing.T) {
 
 	g := 12.5
 	c := int64(7)
-	_ = a.store.Update(&models.Metrics{ID: "TestGauge", MType: models.Gauge, Value: &g})
-	_ = a.store.Update(&models.Metrics{ID: "TestCounter", MType: models.Counter, Delta: &c})
+	_ = a.store.Update(context.Background(), &models.Metrics{ID: "TestGauge", MType: models.Gauge, Value: &g})
+	_ = a.store.Update(context.Background(), &models.Metrics{ID: "TestCounter", MType: models.Counter, Delta: &c})
 
 	got := make(map[string]models.Metrics)
 	var mu sync.Mutex
@@ -224,7 +224,7 @@ func TestCollectOnce_LogsErrorWhenStoreUpdateFails(t *testing.T) {
 	log, logs := newObservedLogger()
 	a := NewAgent("http://localhost:8080", 2*time.Second, 10*time.Second, &metricStoreMock{updateErr: errors.New("store unavailable")}, log)
 
-	a.collectOnce()
+	a.collectOnce(context.Background())
 
 	if logs.FilterMessage("collect gauge error").Len() == 0 {
 		t.Fatalf("expected gauge collect error to be logged, got %v", logs.All())

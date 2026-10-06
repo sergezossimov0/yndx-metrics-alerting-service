@@ -11,6 +11,12 @@ import (
 
 func PingHandler(db *sql.DB, timeout time.Duration, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if db == nil {
+			log.Warn("db is nil")
+			http.Error(w, "Database not configured", http.StatusInternalServerError)
+			return
+		}
+
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 

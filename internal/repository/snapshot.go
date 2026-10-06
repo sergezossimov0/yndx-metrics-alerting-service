@@ -56,8 +56,8 @@ func (s *Snapshot) restore() {
 // Update stores the metric and synchronously writes a snapshot to disk. A
 // failed disk write is only logged: the metric is already in memory, so the
 // update itself succeeded and the next successful write will persist it.
-func (s *Snapshot) Update(metric *models.Metrics) error {
-	if err := s.store.Update(metric); err != nil {
+func (s *Snapshot) Update(ctx context.Context, metric *models.Metrics) error {
+	if err := s.store.Update(ctx, metric); err != nil {
 		return err
 	}
 

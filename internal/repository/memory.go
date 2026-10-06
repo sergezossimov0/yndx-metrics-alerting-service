@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"sync"
 
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
@@ -25,7 +26,7 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
-func (s *MemStorage) Update(metric *models.Metrics) error {
+func (s *MemStorage) Update(_ context.Context, metric *models.Metrics) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -38,7 +39,7 @@ func (s *MemStorage) Update(metric *models.Metrics) error {
 	return nil
 }
 
-func (s *MemStorage) ListGauges() map[string]float64 {
+func (s *MemStorage) ListGauges(_ context.Context) map[string]float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -51,7 +52,7 @@ func (s *MemStorage) ListGauges() map[string]float64 {
 	return gaugesCopy
 }
 
-func (s *MemStorage) ListCounters() map[string]int64 {
+func (s *MemStorage) ListCounters(_ context.Context) map[string]int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -64,7 +65,7 @@ func (s *MemStorage) ListCounters() map[string]int64 {
 	return countersCopy
 }
 
-func (s *MemStorage) GetGauge(name string) (float64, bool) {
+func (s *MemStorage) GetGauge(_ context.Context, name string) (float64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -72,7 +73,7 @@ func (s *MemStorage) GetGauge(name string) (float64, bool) {
 	return v, ok
 }
 
-func (s *MemStorage) GetCounter(name string) (int64, bool) {
+func (s *MemStorage) GetCounter(_ context.Context, name string) (int64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

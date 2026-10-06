@@ -34,7 +34,8 @@ func UpdateMetricsHandler(updater MetricUpdater, log *zap.Logger) http.HandlerFu
 			return
 		}
 
-		if err := updater.UpdateMetric(metric); err != nil {
+		ctx := r.Context()
+		if err := updater.UpdateMetric(ctx, metric); err != nil {
 			// server error: logged, the client only gets a generic message
 			log.Error(msgFailedUpdateMetric,
 				zap.String("metric", metric.ID), zap.String("type", metric.MType), zap.Error(err))
@@ -53,7 +54,8 @@ func GetMetricValueHandler(reader MetricReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		req := models.Metrics{ID: chi.URLParam(r, "name"), MType: chi.URLParam(r, "type")}
 
-		if err := validateMetricTypeRequest(&req, reader); err != nil {
+		ctx := r.Context()
+		if err := validateMetricTypeRequest(ctx, &req, reader); err != nil {
 			if errors.Is(err, errMetricNotFound) || errors.Is(err, errMetricNameMissing) {
 				http.NotFound(w, r)
 				return

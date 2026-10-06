@@ -180,7 +180,7 @@ func TestNewSnapshot_RestoreIgnoresLeftoverTempFile(t *testing.T) {
 
 	NewSnapshot(path, 0, store, true, zap.NewNop())
 
-	if got, ok := store.GetGauge("Alloc"); !ok || got != 7.5 {
+	if got, ok := store.GetGauge(context.Background(), "Alloc"); !ok || got != 7.5 {
 		t.Fatalf("expected Alloc=7.5 restored from the real snapshot, got %v (present=%v)", got, ok)
 	}
 }
@@ -291,7 +291,7 @@ func TestNewSnapshot_RestoreDisabledDoesNotLoadFile(t *testing.T) {
 
 	NewSnapshot(path, 0, store, false, zap.NewNop())
 
-	if _, ok := store.GetGauge("Alloc"); ok {
+	if _, ok := store.GetGauge(context.Background(), "Alloc"); ok {
 		t.Fatal("expected NewSnapshot with restore=false to leave the store empty, but Alloc was restored")
 	}
 }
@@ -306,7 +306,7 @@ func TestNewSnapshot_RestoreLoadsMetricsIntoStore(t *testing.T) {
 
 	NewSnapshot(path, 0, store, true, zap.NewNop())
 
-	got, ok := store.GetGauge("Alloc")
+	got, ok := store.GetGauge(context.Background(), "Alloc")
 	if !ok || got != 7.5 {
 		t.Fatalf("expected restored gauge Alloc=7.5, got %v (present=%v)", got, ok)
 	}
@@ -317,7 +317,7 @@ func TestSnapshotUpdate_PersistsAfterEveryUpdate(t *testing.T) {
 	snapshot := NewSnapshot(path, 0, NewMemStorage(), false, zap.NewNop())
 
 	g := 5.0
-	if err := snapshot.Update(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g}); err != nil {
+	if err := snapshot.Update(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -330,7 +330,7 @@ func TestSnapshotUpdate_PersistsAfterEveryUpdate(t *testing.T) {
 	}
 
 	c := int64(2)
-	if err := snapshot.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c}); err != nil {
+	if err := snapshot.Update(context.Background(), &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -350,11 +350,11 @@ func TestSnapshotUpdate_SucceedsEvenWhenDiskWriteFails(t *testing.T) {
 	snapshot := NewSnapshot(path, 0, store, false, zap.NewNop())
 
 	g := 5.0
-	if err := snapshot.Update(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g}); err != nil {
+	if err := snapshot.Update(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g}); err != nil {
 		t.Fatalf("expected Update to succeed despite the disk write failing, got: %v", err)
 	}
 
-	got, ok := store.GetGauge("Alloc")
+	got, ok := store.GetGauge(context.Background(), "Alloc")
 	if !ok || got != 5.0 {
 		t.Fatalf("expected the metric to still be stored in memory, got %v (present=%v)", got, ok)
 	}
@@ -371,7 +371,7 @@ func TestSnapshotUpdate_ConcurrentUpdatesLeaveValidFileWithAllMetrics(t *testing
 		go func() {
 			defer wg.Done()
 			d := int64(1)
-			_ = snapshot.Update(&models.Metrics{ID: fmt.Sprintf("Counter%d", i), MType: models.Counter, Delta: &d})
+			_ = snapshot.Update(context.Background(), &models.Metrics{ID: fmt.Sprintf("Counter%d", i), MType: models.Counter, Delta: &d})
 		}()
 	}
 	wg.Wait()
@@ -404,11 +404,11 @@ func TestSnapshotRun_SavesOnEveryTick(t *testing.T) {
 	// Two different states must both reach the disk: that proves Run keeps
 	// ticking instead of stopping after the first save.
 	g := 1.0
-	_ = store.Update(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
+	_ = store.Update(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
 	waitForSnapshot(t, path, 1)
 
 	c := int64(1)
-	_ = store.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c})
+	_ = store.Update(context.Background(), &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c})
 	waitForSnapshot(t, path, 2)
 }
 
@@ -426,7 +426,7 @@ func TestSnapshotRun_SavesOnceMoreWhenContextIsCancelled(t *testing.T) {
 	}()
 
 	g := 1.0
-	_ = store.Update(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
+	_ = store.Update(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
 	cancel()
 
 	select {

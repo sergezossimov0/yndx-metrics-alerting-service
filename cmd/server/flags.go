@@ -143,9 +143,5 @@ func resolveConfig() (*config, error) {
 	if cfg.dbConnection == "" {
 		cfg.dbConnection = *dbConnectionFlag
 	}
-	/*if cfg.dbConnection == "" {
-		return nil, errors.New("database connection string (DSN) must be provided via -d flag or DATABASE_DSN environment variable")
-	}*/
-
 	return cfg, nil
 }

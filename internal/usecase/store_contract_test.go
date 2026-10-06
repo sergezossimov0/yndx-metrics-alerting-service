@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"context"
 	"testing"
 
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
@@ -15,6 +16,8 @@ var (
 	_ MetricReadStore   = (*repository.MemStorage)(nil)
 	_ MetricUpdateStore = (*repository.MemStorage)(nil)
 	_ MetricUpdateStore = (*repository.Snapshot)(nil)
+	_ MetricReadStore   = (*repository.PostgresStorage)(nil)
+	_ MetricUpdateStore = (*repository.PostgresStorage)(nil)
 )
 
 func TestUsecases_WorkOverRealMemStorage(t *testing.T) {
@@ -23,22 +26,22 @@ func TestUsecases_WorkOverRealMemStorage(t *testing.T) {
 	read := NewMetricRead(store)
 
 	g := 1.5
-	if err := update.UpdateMetric(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g}); err != nil {
+	if err := update.UpdateMetric(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	d := int64(3)
-	if err := update.UpdateMetric(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &d}); err != nil {
+	if err := update.UpdateMetric(context.Background(), &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &d}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if got, ok := read.GetGauge("Alloc"); !ok || got != 1.5 {
+	if got, ok := read.GetGauge(context.Background(), "Alloc"); !ok || got != 1.5 {
 		t.Fatalf("expected Alloc=1.5, got %v (present=%v)", got, ok)
 	}
-	if got, ok := read.GetCounter("PollCount"); !ok || got != 3 {
+	if got, ok := read.GetCounter(context.Background(), "PollCount"); !ok || got != 3 {
 		t.Fatalf("expected PollCount=3, got %v (present=%v)", got, ok)
 	}
-	if len(read.ListGauges()) != 1 || len(read.ListCounters()) != 1 {
-		t.Fatalf("expected one gauge and one counter, got %v and %v", read.ListGauges(), read.ListCounters())
+	if len(read.ListGauges(context.Background())) != 1 || len(read.ListCounters(context.Background())) != 1 {
+		t.Fatalf("expected one gauge and one counter, got %v and %v", read.ListGauges(context.Background()), read.ListCounters(context.Background()))
 	}
 }
 
@@ -49,11 +52,11 @@ func TestMetricUpdate_WorksOverSnapshotInSyncMode(t *testing.T) {
 	update := NewMetricUpdate(snapshot)
 
 	g := 2.5
-	if err := update.UpdateMetric(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g}); err != nil {
+	if err := update.UpdateMetric(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if got, ok := store.GetGauge("Alloc"); !ok || got != 2.5 {
+	if got, ok := store.GetGauge(context.Background(), "Alloc"); !ok || got != 2.5 {
 		t.Fatalf("expected the update to reach the underlying store, got %v (present=%v)", got, ok)
 	}
 }
