@@ -99,6 +99,7 @@ func run() error {
 	r.Use(handler.WithLogging(httpLog), handler.CompressionHandler(httpLog))
 
 	r.Post("/update/", handler.UpdateMetricsJSONHandler(&uc, httpLog))
+	r.Post("/updates/", handler.UpdateMetricsBatchJSONHandler(&uc, httpLog))
 	r.Post("/value/", handler.GetMetricValueJSONHandler(&readUC, httpLog))
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetricsHandler(&uc, httpLog))
 	r.Get("/value/{type}/{name}", handler.GetMetricValueHandler(&readUC))

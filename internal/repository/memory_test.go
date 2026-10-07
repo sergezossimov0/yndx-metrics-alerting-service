@@ -278,3 +278,103 @@ func TestMemStorage_ConcurrentAccessIsSafe(t *testing.T) {
 		t.Fatalf("expected %d gauges, got %d", writers, got)
 	}
 }
+
+func TestMemStorage_UpdateBatch_AppliesAllMetrics(t *testing.T) {
+	s := NewMemStorage()
+	g1, g2 := 1.0, 2.0
+	d1, d2 := int64(2), int64(3)
+
+	err := s.UpdateBatch(context.Background(), []models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: &g1},
+		{ID: "PollCount", MType: models.Counter, Delta: &d1},
+		{ID: "Alloc", MType: models.Gauge, Value: &g2},
+		{ID: "PollCount", MType: models.Counter, Delta: &d2},
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if got, _ := s.GetGauge(context.Background(), "Alloc"); got != 2.0 {
+		t.Fatalf("expected the last gauge in the batch to win, got %v", got)
+	}
+	if got, _ := s.GetCounter(context.Background(), "PollCount"); got != 5 {
+		t.Fatalf("expected duplicate counters in the batch to add up to 5, got %v", got)
+	}
+}
+
+func TestMemStorage_UpdateBatch_EmptyBatchIsNoop(t *testing.T) {
+	s := NewMemStorage()
+
+	if err := s.UpdateBatch(context.Background(), nil); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if len(s.Snapshot()) != 0 {
+		t.Fatalf("expected empty storage, got %+v", s.Snapshot())
+	}
+}
+
+// Run with -race: every batch writes the same value to two gauges, so a
+// reader that ever sees them differ has observed a partially applied batch.
+func TestMemStorage_UpdateBatch_ReadersNeverSeePartialBatch(t *testing.T) {
+	const iterations = 500
+
+	s := NewMemStorage()
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			v := float64(i)
+			_ = s.UpdateBatch(context.Background(), []models.Metrics{
+				{ID: "A", MType: models.Gauge, Value: &v},
+				{ID: "B", MType: models.Gauge, Value: &v},
+			})
+		}
+	}()
+
+	errs := make(chan string, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			gauges := s.ListGauges(context.Background())
+			if gauges["A"] != gauges["B"] {
+				select {
+				case errs <- fmt.Sprintf("partial batch observed: A=%v B=%v", gauges["A"], gauges["B"]):
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(errs)
+	if msg, ok := <-errs; ok {
+		t.Fatal(msg)
+	}
+}
+
+func TestMemStorage_SubtractCounters_KeepsIncrementsMadeAfterSnapshot(t *testing.T) {
+	s := NewMemStorage()
+	one := int64(1)
+	g := 1.5
+
+	_ = s.Update(context.Background(), &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &one})
+	_ = s.Update(context.Background(), &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &one})
+	_ = s.Update(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
+	sent := s.Snapshot()
+
+	// a poll that happens while the batch is in flight
+	_ = s.Update(context.Background(), &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &one})
+
+	s.SubtractCounters(context.Background(), sent)
+
+	if got, _ := s.GetCounter(context.Background(), "PollCount"); got != 1 {
+		t.Fatalf("expected only the unsent increment to remain, got %d", got)
+	}
+	if got, ok := s.GetGauge(context.Background(), "Alloc"); !ok || got != 1.5 {
+		t.Fatalf("expected gauges to be left untouched, got %v (present=%v)", got, ok)
+	}
+}

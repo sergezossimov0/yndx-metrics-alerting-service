@@ -30,13 +30,44 @@ func (s *MemStorage) Update(_ context.Context, metric *models.Metrics) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.apply(metric)
+	return nil
+}
+
+// UpdateBatch applies all metrics under a single lock, so readers never see a
+// partially applied batch.
+func (s *MemStorage) UpdateBatch(_ context.Context, metrics []models.Metrics) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range metrics {
+		s.apply(&metrics[i])
+	}
+	return nil
+}
+
+// apply stores one metric. The caller must hold mu.
+func (s *MemStorage) apply(metric *models.Metrics) {
 	if metric.MType == models.Gauge && metric.Value != nil {
 		s.gauges[metric.ID] = *metric.Value
 	} else if metric.MType == models.Counter && metric.Delta != nil {
 		s.counters[metric.ID] += *metric.Delta
 	}
+}
 
-	return nil
+// SubtractCounters subtracts the deltas of the sent counters. The agent calls
+// it after a successful report: subtracting (rather than resetting to zero)
+// keeps increments collected between taking the snapshot and this call, so
+// none of them is lost or sent twice. Gauges in sent are ignored.
+func (s *MemStorage) SubtractCounters(_ context.Context, sent []models.Metrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, m := range sent {
+		if m.MType == models.Counter && m.Delta != nil {
+			s.counters[m.ID] -= *m.Delta
+		}
+	}
 }
 
 func (s *MemStorage) ListGauges(_ context.Context) map[string]float64 {

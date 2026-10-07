@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,6 +31,7 @@ func newTestHandlerWithLogger(log *zap.Logger) (http.Handler, *repository.MemSto
 	readUC := usecase.NewMetricRead(store)
 	r := chi.NewRouter()
 	r.Post("/update/", UpdateMetricsJSONHandler(&uc, log))
+	r.Post("/updates/", UpdateMetricsBatchJSONHandler(&uc, log))
 	r.Post("/value/", GetMetricValueJSONHandler(&readUC, log))
 	r.Post("/update/{type}/{name}/{value}", UpdateMetricsHandler(&uc, log))
 	r.Get("/value/{type}/{name}", GetMetricValueHandler(&readUC))
@@ -312,6 +314,126 @@ func TestUpdateMetricsJSONHandler_ReturnsInternalServerErrorWhenUpdaterFails(t *
 	value := 1.0
 	raw, _ := json.Marshal(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value})
 	res := postJSONRequest(r, "/update/", "application/json", raw)
+
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, res.Code)
+	}
+}
+
+func postBatch(h http.Handler, batch []models.Metrics) *httptest.ResponseRecorder {
+	raw, _ := json.Marshal(batch)
+	return postJSONRequest(h, "/updates/", "application/json", raw)
+}
+
+func TestUpdateMetricsBatchJSONHandler_StoresAllMetrics(t *testing.T) {
+	h, store := newTestHandler()
+	g := 1.5
+	d1, d2 := int64(2), int64(3)
+
+	res := postBatch(h, []models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: &g},
+		{ID: "PollCount", MType: models.Counter, Delta: &d1},
+		{ID: "PollCount", MType: models.Counter, Delta: &d2},
+	})
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, res.Code, res.Body.String())
+	}
+	if got, ok := store.GetGauge(context.Background(), "Alloc"); !ok || got != 1.5 {
+		t.Fatalf("expected Alloc=1.5, got %v (present=%v)", got, ok)
+	}
+	if got, _ := store.GetCounter(context.Background(), "PollCount"); got != 5 {
+		t.Fatalf("expected duplicate counters to add up to 5, got %d", got)
+	}
+}
+
+func TestUpdateMetricsBatchJSONHandler_AcceptsGzipBody(t *testing.T) {
+	store := repository.NewMemStorage()
+	uc := usecase.NewMetricUpdate(store)
+	r := chi.NewRouter()
+	r.Use(CompressionHandler(zap.NewNop()))
+	r.Post("/updates/", UpdateMetricsBatchJSONHandler(&uc, zap.NewNop()))
+
+	g := 2.5
+	raw, _ := json.Marshal([]models.Metrics{{ID: "Alloc", MType: models.Gauge, Value: &g}})
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	_, _ = gz.Write(raw)
+	_ = gz.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/updates/", &buf)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	res := httptest.NewRecorder()
+	r.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, res.Code, res.Body.String())
+	}
+	if got, ok := store.GetGauge(context.Background(), "Alloc"); !ok || got != 2.5 {
+		t.Fatalf("expected Alloc=2.5, got %v (present=%v)", got, ok)
+	}
+}
+
+func TestUpdateMetricsBatchJSONHandler_Errors(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{name: "invalid content type", contentType: "text/plain", body: `[]`},
+		{name: "invalid JSON", contentType: "application/json", body: `[{"id":`},
+		{name: "single object instead of array", contentType: "application/json", body: `{"id":"Alloc","type":"gauge","value":1}`},
+		{name: "empty batch", contentType: "application/json", body: `[]`},
+		{name: "null batch", contentType: "application/json", body: `null`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _ := newTestHandler()
+			res := postJSONRequest(h, "/updates/", tt.contentType, []byte(tt.body))
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
+			}
+		})
+	}
+}
+
+func TestUpdateMetricsBatchJSONHandler_RejectsWholeBatchWhenOneMetricIsInvalid(t *testing.T) {
+	h, store := newTestHandler()
+	g := 1.5
+
+	res := postBatch(h, []models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: &g},
+		{ID: "PollCount", MType: models.Counter}, // missing delta
+	})
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
+	}
+	if !strings.Contains(res.Body.String(), "PollCount") {
+		t.Fatalf("expected the error to name the invalid metric, got %q", res.Body.String())
+	}
+	if len(store.Snapshot()) != 0 {
+		t.Fatalf("expected nothing to be stored, got %+v", store.Snapshot())
+	}
+}
+
+type metricBatchUpdaterMock struct {
+	err error
+}
+
+func (m *metricBatchUpdaterMock) UpdateMetrics(_ context.Context, _ []models.Metrics) error {
+	return m.err
+}
+
+func TestUpdateMetricsBatchJSONHandler_ReturnsInternalServerErrorWhenUpdaterFails(t *testing.T) {
+	r := chi.NewRouter()
+	r.Post("/updates/", UpdateMetricsBatchJSONHandler(&metricBatchUpdaterMock{err: errors.New("store unavailable")}, zap.NewNop()))
+
+	value := 1.0
+	raw, _ := json.Marshal([]models.Metrics{{ID: "Alloc", MType: models.Gauge, Value: &value}})
+	res := postJSONRequest(r, "/updates/", "application/json", raw)
 
 	if res.Code != http.StatusInternalServerError {
 		t.Fatalf("expected status %d, got %d", http.StatusInternalServerError, res.Code)

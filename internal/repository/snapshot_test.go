@@ -478,3 +478,41 @@ func waitForSnapshot(t *testing.T, path string, wantLen int) {
 		}
 	}
 }
+
+func TestSnapshotUpdateBatch_PersistsWholeBatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.json")
+	snapshot := NewSnapshot(path, 0, NewMemStorage(), false, zap.NewNop())
+
+	g := 5.0
+	c := int64(2)
+	err := snapshot.UpdateBatch(context.Background(), []models.Metrics{
+		{ID: "Alloc", MType: models.Gauge, Value: &g},
+		{ID: "PollCount", MType: models.Counter, Delta: &c},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := loadSnapshotFromFile(path)
+	if err != nil {
+		t.Fatalf("expected the snapshot to be on disk after the batch, got error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected both metrics of the batch to be persisted, got %+v", got)
+	}
+}
+
+func TestSnapshotUpdateBatch_SucceedsEvenWhenDiskWriteFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-dir", "snapshot.json")
+	store := NewMemStorage()
+	snapshot := NewSnapshot(path, 0, store, false, zap.NewNop())
+
+	g := 5.0
+	if err := snapshot.UpdateBatch(context.Background(), []models.Metrics{{ID: "Alloc", MType: models.Gauge, Value: &g}}); err != nil {
+		t.Fatalf("expected UpdateBatch to succeed despite the disk write failing, got: %v", err)
+	}
+
+	if got, ok := store.GetGauge(context.Background(), "Alloc"); !ok || got != 5.0 {
+		t.Fatalf("expected the metric to still be stored in memory, got %v (present=%v)", got, ok)
+	}
+}

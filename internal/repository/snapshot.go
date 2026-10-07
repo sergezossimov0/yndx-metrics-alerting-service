@@ -67,6 +67,19 @@ func (s *Snapshot) Update(ctx context.Context, metric *models.Metrics) error {
 	return nil
 }
 
+// UpdateBatch stores all metrics and writes a single snapshot to disk, not one
+// per metric. Disk write failures are handled as in Update.
+func (s *Snapshot) UpdateBatch(ctx context.Context, metrics []models.Metrics) error {
+	if err := s.store.UpdateBatch(ctx, metrics); err != nil {
+		return err
+	}
+
+	if err := s.persist(); err != nil {
+		s.log.Error("failed to persist metrics snapshot", zap.String("path", s.path), zap.Error(err))
+	}
+	return nil
+}
+
 // Run saves the store every storeInterval until ctx is cancelled, then
 // performs one final save so nothing written since the last tick is lost.
 // It blocks, so start it in its own goroutine. A non-positive interval means

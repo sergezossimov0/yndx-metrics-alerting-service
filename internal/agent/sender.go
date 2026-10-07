@@ -22,8 +22,8 @@ const shutdownFlushTimeout = 5 * time.Second
 
 type metricStore interface {
 	Update(ctx context.Context, metric *models.Metrics) error
-	ListGauges(ctx context.Context) map[string]float64
-	ListCounters(ctx context.Context) map[string]int64
+	Snapshot() []models.Metrics
+	SubtractCounters(ctx context.Context, sent []models.Metrics)
 }
 
 type Agent struct {
@@ -96,8 +96,26 @@ func (a *Agent) collectOnce(ctx context.Context) {
 	}
 }
 
+// sendMetricJSON posts a single metric to POST /update/.
 func (a *Agent) sendMetricJSON(ctx context.Context, body *models.Metrics) error {
-	metricURL := strings.TrimRight(a.serverAddr, "/") + "/update/"
+	if err := a.postGzipJSON(ctx, "/update/", body); err != nil {
+		return fmt.Errorf("%s %s: %w", body.MType, body.ID, err)
+	}
+	return nil
+}
+
+// sendBatchJSON posts all metrics in a single request to POST /updates/.
+func (a *Agent) sendBatchJSON(ctx context.Context, batch []models.Metrics) error {
+	if err := a.postGzipJSON(ctx, "/updates/", models.MetricsList(batch)); err != nil {
+		return fmt.Errorf("batch of %d metrics: %w", len(batch), err)
+	}
+	return nil
+}
+
+// postGzipJSON marshals body, compresses it with gzip and posts it to path on
+// the server. Any status other than 200 OK is an error.
+func (a *Agent) postGzipJSON(ctx context.Context, path string, body easyjson.Marshaler) error {
+	reqURL := strings.TrimRight(a.serverAddr, "/") + path
 
 	reqBody, err := easyjson.Marshal(body)
 	if err != nil {
@@ -109,7 +127,7 @@ func (a *Agent) sendMetricJSON(ctx context.Context, body *models.Metrics) error 
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, metricURL, bytes.NewReader(compressedBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(compressedBody))
 	if err != nil {
 		return err
 	}
@@ -126,43 +144,31 @@ func (a *Agent) sendMetricJSON(ctx context.Context, body *models.Metrics) error 
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s %s: unexpected status %d", body.MType, body.ID, resp.StatusCode)
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
 	return nil
 }
 
+// reportOnceJSON sends all collected metrics as one batch. Counters hold the
+// delta accumulated since the last successful report: once the server has
+// accepted the batch, the sent deltas are subtracted. If sending fails, the
+// deltas stay and go out with the next batch. An empty batch is not sent.
 func (a *Agent) reportOnceJSON(ctx context.Context) {
-	gauges := a.store.ListGauges(ctx)
-	counters := a.store.ListCounters(ctx)
+	if ctx.Err() != nil {
+		a.logReportInterrupted(ctx)
+		return
+	}
 
-	for name, value := range gauges {
-		if ctx.Err() != nil {
-			a.logReportInterrupted(ctx)
-			return
-		}
-		gm := &models.Metrics{
-			ID:    name,
-			MType: models.Gauge,
-			Value: &value,
-		}
-		if err := a.sendMetricJSON(ctx, gm); err != nil {
-			a.logSendError("send gauge error", name, err)
-		}
+	batch := a.store.Snapshot()
+	if len(batch) == 0 {
+		return
 	}
-	for name, value := range counters {
-		if ctx.Err() != nil {
-			a.logReportInterrupted(ctx)
-			return
-		}
-		cm := &models.Metrics{
-			ID:    name,
-			MType: models.Counter,
-			Delta: &value,
-		}
-		if err := a.sendMetricJSON(ctx, cm); err != nil {
-			a.logSendError("send counter error", name, err)
-		}
+
+	if err := a.sendBatchJSON(ctx, batch); err != nil {
+		a.logSendError("send metrics batch error", len(batch), err)
+		return
 	}
+	a.store.SubtractCounters(ctx, batch)
 }
 
 func (a *Agent) logReportInterrupted(ctx context.Context) {
@@ -170,12 +176,12 @@ func (a *Agent) logReportInterrupted(ctx context.Context) {
 }
 
 // logSendError downgrades errors caused by shutdown: they are expected, not failures.
-func (a *Agent) logSendError(msg, name string, err error) {
+func (a *Agent) logSendError(msg string, count int, err error) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		a.log.Debug(msg, zap.String("metric", name), zap.Error(err))
+		a.log.Debug(msg, zap.Int("count", count), zap.Error(err))
 		return
 	}
-	a.log.Error(msg, zap.String("metric", name), zap.Error(err))
+	a.log.Error(msg, zap.Int("count", count), zap.Error(err))
 }
 
 func (a *Agent) Run(ctx context.Context) {
