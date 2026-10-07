@@ -114,7 +114,13 @@ func (s *Snapshot) persist() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return saveSnapshotToFile(s.path, s.store.Snapshot())
+	if err := saveSnapshotToFile(s.path, s.store.Snapshot()); err != nil {
+		return err
+	}
+
+	// Debug, not Info: with STORE_INTERVAL=0 this runs after every update.
+	s.log.Debug("persisted metrics snapshot", zap.String("path", s.path))
+	return nil
 }
 
 // snapshotFileMode keeps the permissions the snapshot had with os.WriteFile.

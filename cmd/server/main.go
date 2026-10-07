@@ -64,10 +64,10 @@ func run() error {
 		}
 		defer db.Close()
 
-		dbStore, err := repository.NewPostgresStorage(ctx, db, dbConnectionTimeout, log.With(zap.String("component", "postgres")))
-		if err != nil {
+		if err := repository.ApplyMigrations(ctx, cfg.dbConnection, dbConnectionTimeout, log.With(zap.String("component", "migrations"))); err != nil {
 			return err
 		}
+		dbStore := repository.NewPostgresStorage(db, dbConnectionTimeout, log.With(zap.String("component", "postgres")))
 
 		store = dbStore
 		updateStore = dbStore

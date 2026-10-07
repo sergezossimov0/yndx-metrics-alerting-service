@@ -13,24 +13,8 @@ import (
 	"go.uber.org/zap"
 )
 
-const connectionTimeout = 2 * time.Second
-
-// Gauges and counters live in one table keyed by (id, mtype), so the same
-// name may exist as both a gauge and a counter, as in MemStorage. The CHECK
-// constraint guarantees exactly one of delta/value is set for the row's type.
-const createMetricsTable = `
-CREATE TABLE IF NOT EXISTS metrics (
-    id    TEXT             NOT NULL,
-    mtype TEXT             NOT NULL CHECK (mtype IN ('gauge', 'counter')),
-    delta BIGINT,
-    value DOUBLE PRECISION,
-    PRIMARY KEY (id, mtype),
-    CHECK (
-        (mtype = 'gauge'   AND value IS NOT NULL AND delta IS NULL) OR
-        (mtype = 'counter' AND delta IS NOT NULL AND value IS NULL)
-    )
-)`
-
+// The metrics table is created by the migrations in the migrations directory
+// (see ApplyMigrations); the queries below rely on its schema.
 const (
 	upsertGauge = `
 INSERT INTO metrics (id, mtype, value) VALUES ($1, 'gauge', $2)
@@ -58,16 +42,10 @@ type PostgresStorage struct {
 	log     *zap.Logger
 }
 
-// NewPostgresStorage creates the metrics table if it does not exist yet.
-func NewPostgresStorage(ctx context.Context, db *sql.DB, timeout time.Duration, log *zap.Logger) (*PostgresStorage, error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	if _, err := db.ExecContext(ctx, createMetricsTable); err != nil {
-		return nil, fmt.Errorf("create metrics table: %w", err)
-	}
-
-	return &PostgresStorage{db: db, timeout: timeout, log: log}, nil
+// NewPostgresStorage expects the schema to be in place: run ApplyMigrations
+// before using the storage.
+func NewPostgresStorage(db *sql.DB, timeout time.Duration, log *zap.Logger) *PostgresStorage {
+	return &PostgresStorage{db: db, timeout: timeout, log: log}
 }
 
 func (s *PostgresStorage) Update(ctx context.Context, metric *models.Metrics) error {

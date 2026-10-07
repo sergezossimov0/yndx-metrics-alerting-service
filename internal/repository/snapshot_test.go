@@ -388,7 +388,7 @@ func TestSnapshotUpdate_ConcurrentUpdatesLeaveValidFileWithAllMetrics(t *testing
 func TestSnapshotRun_SavesOnEveryTick(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.json")
 	store := NewMemStorage()
-	snapshot := &Snapshot{path: path, storeInterval: 10 * time.Millisecond, store: store}
+	snapshot := &Snapshot{path: path, storeInterval: 10 * time.Millisecond, store: store, log: zap.NewNop()}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
