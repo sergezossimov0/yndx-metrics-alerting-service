@@ -164,6 +164,7 @@ func TestSendMetricJSON_ReturnsErrorOnNetworkFailure(t *testing.T) {
 	ts.Close()
 
 	a := NewAgent(unreachableAddr, 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop())
+	a.retry.Delays = testRetryDelays
 
 	value := 1.0
 	if err := a.sendMetricJSON(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &value}); err == nil {
@@ -247,6 +248,7 @@ func TestSendBatchJSON_ReturnsErrorOnNetworkFailure(t *testing.T) {
 	ts.Close()
 
 	a := NewAgent(unreachableAddr, 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop())
+	a.retry.Delays = testRetryDelays
 
 	if err := a.sendBatchJSON(context.Background(), []models.Metrics{gaugeMetric("Alloc", 1)}); err == nil {
 		t.Fatal("expected error when server is unreachable")
@@ -391,6 +393,7 @@ func TestReportOnceJSON_LogsErrorWhenSendFails(t *testing.T) {
 	log, logs := newObservedLogger()
 	store := &metricStoreMock{metrics: []models.Metrics{gaugeMetric("Alloc", 1.5), counterMetric("PollCount", 1)}}
 	a := NewAgent(unreachableAddr, 2*time.Second, 10*time.Second, store, log)
+	a.retry.Delays = testRetryDelays
 
 	a.reportOnceJSON(context.Background())
 
@@ -479,5 +482,44 @@ func TestAgent_Run_CollectsAndReportsBeforeStopping(t *testing.T) {
 	defer mu.Unlock()
 	if requestCount == 0 {
 		t.Fatal("expected at least one metrics batch to reach the server")
+	}
+}
+
+func TestReportOnceJSON_LogsSuccessfulSend(t *testing.T) {
+	ts, _ := countingServer(t, http.StatusOK)
+	log, logs := newObservedLogger()
+	a := NewAgent(ts.URL, 2*time.Second, 10*time.Second, &metricStoreMock{
+		metrics: []models.Metrics{gaugeMetric("Alloc", 1.5), counterMetric("PollCount", 3)},
+	}, log)
+
+	a.reportOnceJSON(context.Background())
+
+	sent := logs.FilterMessage("metrics batch sent").FilterLevelExact(zapcore.InfoLevel).All()
+	if len(sent) != 1 {
+		t.Fatalf("expected one 'metrics batch sent' entry, got %d: %v", len(sent), logs.All())
+	}
+	fields := sent[0].ContextMap()
+	if fields["count"] != int64(2) {
+		t.Fatalf("expected count=2 in the log entry, got %v", fields["count"])
+	}
+	if fields["server"] != ts.URL {
+		t.Fatalf("expected server=%s in the log entry, got %v", ts.URL, fields["server"])
+	}
+	if _, ok := fields["duration"]; !ok {
+		t.Fatalf("expected duration in the log entry, got %v", fields)
+	}
+}
+
+func TestReportOnceJSON_DoesNotLogSuccessWhenSendFails(t *testing.T) {
+	ts, _ := countingServer(t, http.StatusBadRequest)
+	log, logs := newObservedLogger()
+	a := NewAgent(ts.URL, 2*time.Second, 10*time.Second, &metricStoreMock{
+		metrics: []models.Metrics{gaugeMetric("Alloc", 1.5)},
+	}, log)
+
+	a.reportOnceJSON(context.Background())
+
+	if n := logs.FilterMessage("metrics batch sent").Len(); n != 0 {
+		t.Fatalf("expected no success entry after a failed send, got %d: %v", n, logs.All())
 	}
 }

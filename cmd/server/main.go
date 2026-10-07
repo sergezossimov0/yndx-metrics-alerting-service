@@ -16,6 +16,7 @@ import (
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/handler"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/retry"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/usecase"
 	"go.uber.org/zap"
 
@@ -64,10 +65,10 @@ func run() error {
 		}
 		defer db.Close()
 
-		if err := repository.ApplyMigrations(ctx, cfg.dbConnection, dbConnectionTimeout, log.With(zap.String("component", "migrations"))); err != nil {
+		if err := repository.ApplyMigrations(ctx, cfg.dbConnection, dbConnectionTimeout, retry.DefaultDelays, log.With(zap.String("component", "migrations"))); err != nil {
 			return err
 		}
-		dbStore := repository.NewPostgresStorage(db, dbConnectionTimeout, log.With(zap.String("component", "postgres")))
+		dbStore := repository.NewPostgresStorage(db, dbConnectionTimeout, retry.DefaultDelays, log.With(zap.String("component", "postgres")))
 
 		store = dbStore
 		updateStore = dbStore
