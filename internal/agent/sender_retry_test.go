@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -198,7 +199,8 @@ func TestIsRetriableSendError(t *testing.T) {
 		{name: "504", err: &statusError{code: http.StatusGatewayTimeout}, want: true},
 		{name: "400", err: &statusError{code: http.StatusBadRequest}, want: false},
 		{name: "500", err: &statusError{code: http.StatusInternalServerError}, want: false},
-		{name: "cancelled", err: &url.Error{Op: "Post", URL: "http://x", Err: context.Canceled}, want: false},
+		// shutdown is filtered by retry.Policy.Do via its own ctx, not here
+		{name: "client timeout", err: &url.Error{Op: "Post", URL: "http://x", Err: context.DeadlineExceeded}, want: true},
 		{name: "other", err: errors.New("marshal failed"), want: false},
 	}
 	for _, tt := range tests {
@@ -207,5 +209,47 @@ func TestIsRetriableSendError(t *testing.T) {
 				t.Fatalf("isRetriableSendError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// A hung server makes http.Client time out. Since Go 1.23 that error matches
+// context.DeadlineExceeded, and it must still be retried.
+func TestSendBatchJSON_RetriesClientTimeout(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		requests int
+	)
+	// The hung handler waits for release as well: the server may not notice
+	// the client leaving, and ts.Close would then wait for it forever.
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		mu.Lock()
+		requests++
+		n := requests
+		mu.Unlock()
+		if n == 1 {
+			// hang until the client gives up
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	defer close(release) // runs before ts.Close
+
+	a := newRetryTestAgent(ts.URL, repository.NewMemStorage())
+	a.client.Timeout = 50 * time.Millisecond
+
+	if err := a.sendBatchJSON(context.Background(), []models.Metrics{gaugeMetric("Alloc", 1)}); err != nil {
+		t.Fatalf("expected the retry after a client timeout to succeed, got %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != 2 {
+		t.Fatalf("expected 2 requests (timeout + retry), got %d", requests)
 	}
 }

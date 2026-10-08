@@ -24,7 +24,7 @@ import (
 const shutdownFlushTimeout = 5 * time.Second
 
 type metricStore interface {
-	Update(ctx context.Context, metric *models.Metrics) error
+	UpdateBatch(ctx context.Context, metrics []models.Metrics) error
 	Snapshot() []models.Metrics
 	SubtractCounters(ctx context.Context, sent []models.Metrics)
 }
@@ -74,11 +74,12 @@ func (e *statusError) Error() string {
 // timed out) or a status saying the server is temporarily unavailable.
 // 400 is not retried: the same body would be rejected again. Neither is 500:
 // the server has already retried its own storage before answering.
+//
+// Context errors are deliberately not filtered out here. Since Go 1.23 a
+// http.Client timeout matches context.DeadlineExceeded too, so such a filter
+// would also stop retries of a hung server. A cancelled agent (shutdown) is
+// handled by retry.Policy.Do, which checks its own ctx before retrying.
 func isRetriableSendError(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-
 	if statusErr, ok := errors.AsType[*statusError](err); ok {
 		switch statusErr.code {
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
@@ -127,16 +128,18 @@ func (a *Agent) collectOnce(ctx context.Context) {
 		"RandomValue":   rand.Float64(),
 	}
 
+	batch := make([]models.Metrics, 0, len(metrics)+1)
 	for name, value := range metrics {
-		gaugeValue := value
-		if err := a.store.Update(ctx, &models.Metrics{ID: name, MType: models.Gauge, Value: &gaugeValue}); err != nil {
-			a.log.Error("collect gauge error", zap.String("metric", name), zap.Error(err))
-		}
+		batch = append(batch, models.Metrics{ID: name, MType: models.Gauge, Value: &value})
 	}
-
 	pollInc := int64(1)
-	if err := a.store.Update(ctx, &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &pollInc}); err != nil {
-		a.log.Error("collect counter error", zap.String("metric", "PollCount"), zap.Error(err))
+	batch = append(batch, models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &pollInc})
+
+	// One UpdateBatch, not an Update per metric: reporting runs in another
+	// goroutine, and a snapshot taken between separate updates would mix
+	// values of two polls. The store applies the batch under one lock.
+	if err := a.store.UpdateBatch(ctx, batch); err != nil {
+		a.log.Error("collect metrics error", zap.Int("count", len(batch)), zap.Error(err))
 	}
 }
 

@@ -29,16 +29,18 @@ func decodeGzipJSONBody(r *http.Request, out interface{}) error {
 	return json.NewDecoder(zr).Decode(out)
 }
 
-// metricStoreMock lets tests force Update to fail, which the real
+// metricStoreMock lets tests force UpdateBatch to fail, which the real
 // repository.MemStorage never does — needed to exercise the error-logging
-// branches in collectOnce.
+// branch in collectOnce. It also records the batches collectOnce writes.
 type metricStoreMock struct {
 	updateErr  error
 	metrics    []models.Metrics
 	subtracted []models.Metrics
+	updates    [][]models.Metrics
 }
 
-func (m *metricStoreMock) Update(_ context.Context, metric *models.Metrics) error {
+func (m *metricStoreMock) UpdateBatch(_ context.Context, metrics []models.Metrics) error {
+	m.updates = append(m.updates, metrics)
 	return m.updateErr
 }
 
@@ -375,11 +377,45 @@ func TestCollectOnce_LogsErrorWhenStoreUpdateFails(t *testing.T) {
 
 	a.collectOnce(context.Background())
 
-	if logs.FilterMessage("collect gauge error").Len() == 0 {
-		t.Fatalf("expected gauge collect error to be logged, got %v", logs.All())
+	if logs.FilterMessage("collect metrics error").Len() != 1 {
+		t.Fatalf("expected one collect error to be logged, got %v", logs.All())
 	}
-	if logs.FilterMessage("collect counter error").Len() == 0 {
-		t.Fatalf("expected counter collect error to be logged, got %v", logs.All())
+}
+
+// A poll is written with a single UpdateBatch, so a report running in the
+// other goroutine never snapshots half of it.
+func TestCollectOnce_WritesWholePollInOneBatch(t *testing.T) {
+	store := &metricStoreMock{}
+	a := NewAgent("http://localhost:8080", 2*time.Second, 10*time.Second, store, zap.NewNop())
+
+	a.collectOnce(context.Background())
+
+	if len(store.updates) != 1 {
+		t.Fatalf("expected one UpdateBatch call per poll, got %d", len(store.updates))
+	}
+	byID := make(map[string]models.Metrics)
+	for _, m := range store.updates[0] {
+		byID[m.ID] = m
+	}
+	if len(byID) != 29 {
+		t.Fatalf("expected 28 gauges and PollCount in the batch, got %d metrics", len(byID))
+	}
+	if pc := byID["PollCount"]; pc.MType != models.Counter || pc.Delta == nil || *pc.Delta != 1 {
+		t.Fatalf("expected PollCount=+1 in the batch, got %+v", pc)
+	}
+	if alloc, ok := byID["Alloc"]; !ok || alloc.MType != models.Gauge || alloc.Value == nil {
+		t.Fatalf("expected gauge Alloc in the batch, got %+v", alloc)
+	}
+	// every gauge must point to its own value, not to a shared loop variable
+	seen := make(map[*float64]string)
+	for id, m := range byID {
+		if m.Value == nil {
+			continue
+		}
+		if other, dup := seen[m.Value]; dup {
+			t.Fatalf("gauges %s and %s share one value pointer", id, other)
+		}
+		seen[m.Value] = id
 	}
 }
 

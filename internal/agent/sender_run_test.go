@@ -23,13 +23,15 @@ type pollCountingStore struct {
 	polls []time.Time
 }
 
-func (s *pollCountingStore) Update(ctx context.Context, metric *models.Metrics) error {
-	if metric.ID == "PollCount" {
-		s.mu.Lock()
-		s.polls = append(s.polls, time.Now())
-		s.mu.Unlock()
+func (s *pollCountingStore) UpdateBatch(ctx context.Context, metrics []models.Metrics) error {
+	for _, m := range metrics {
+		if m.ID == "PollCount" {
+			s.mu.Lock()
+			s.polls = append(s.polls, time.Now())
+			s.mu.Unlock()
+		}
 	}
-	return s.MemStorage.Update(ctx, metric)
+	return s.MemStorage.UpdateBatch(ctx, metrics)
 }
 
 func (s *pollCountingStore) pollsBetween(from, to time.Time) int {
