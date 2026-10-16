@@ -59,6 +59,8 @@ func (s *MemStorage) apply(metric *models.Metrics) {
 // it after a successful report: subtracting (rather than resetting to zero)
 // keeps increments collected between taking the snapshot and this call, so
 // none of them is lost or sent twice. Gauges in sent are ignored.
+// It is not idempotent: each sent batch must be subtracted exactly once, so
+// reports must not overlap (see metricStore in internal/agent).
 func (s *MemStorage) SubtractCounters(_ context.Context, sent []models.Metrics) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

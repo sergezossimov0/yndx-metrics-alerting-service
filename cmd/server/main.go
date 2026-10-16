@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,10 +12,9 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/config"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/handler"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/logger"
-	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
-	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/retry"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/usecase"
 	"go.uber.org/zap"
 
@@ -29,7 +27,7 @@ const (
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := start(); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(0)
 		}
@@ -38,13 +36,15 @@ func main() {
 	}
 }
 
-func run() error {
+// start wires the server: configuration, logger, storage and router. It is
+// separate from main so that deferred cleanups run before os.Exit.
+func start() error {
 	cfg, err := resolveConfig()
 	if err != nil {
 		return err
 	}
 
-	log, err := logger.New(resolveLogLevel())
+	log, err := logger.New(config.LogLevel())
 	if err != nil {
 		return err
 	}
@@ -53,47 +53,19 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var store usecase.MetricReadStore
-	var updateStore usecase.MetricUpdateStore
-
-	var db *sql.DB
-	var snapshotDone chan struct{}
-	if cfg.dbConnection != "" {
-		db, err = sql.Open("pgx", cfg.dbConnection)
-		if err != nil {
-			return err
-		}
-		defer db.Close()
-
-		if err := repository.ApplyMigrations(ctx, cfg.dbConnection, dbConnectionTimeout, retry.DefaultDelays, log.With(zap.String("component", "migrations"))); err != nil {
-			return err
-		}
-		dbStore := repository.NewPostgresStorage(db, dbConnectionTimeout, retry.DefaultDelays, log.With(zap.String("component", "postgres")))
-
-		store = dbStore
-		updateStore = dbStore
-	} else {
-		memStore := repository.NewMemStorage()
-
-		// config file storage path and restore flag
-		snapshot := repository.NewSnapshot(cfg.fileStoragePath, cfg.storeInterval.interval, memStore,
-			cfg.restore.isRestore, log.With(zap.String("component", "snapshot")))
-
-		updateStore = memStore
-		if cfg.storeInterval.interval == 0 {
-			updateStore = snapshot
-		} else {
-			snapshotDone = make(chan struct{})
-			go func() {
-				defer close(snapshotDone)
-				snapshot.Run(ctx)
-			}()
-		}
-		store = memStore
+	s, err := newStore(ctx, cfg, log)
+	if err != nil {
+		return err
 	}
+	// runs after run has returned, i.e. after Shutdown drained in-flight requests
+	defer s.close()
 
-	uc := usecase.NewMetricUpdate(updateStore)
-	readUC := usecase.NewMetricRead(store)
+	return run(ctx, cfg.serverAddress, newRouter(s, log), log)
+}
+
+func newRouter(s *storage, log *zap.Logger) http.Handler {
+	uc := usecase.NewMetricUpdate(s.update)
+	readUC := usecase.NewMetricRead(s.read)
 	r := chi.NewRouter()
 
 	httpLog := log.With(zap.String("component", "http"))
@@ -105,16 +77,21 @@ func run() error {
 	r.Post("/update/{type}/{name}/{value}", handler.UpdateMetricsHandler(&uc, httpLog))
 	r.Get("/value/{type}/{name}", handler.GetMetricValueHandler(&readUC))
 	r.Get("/", handler.ListMetricsHandler(&readUC))
-	r.Get("/ping", handler.PingHandler(db, dbConnectionTimeout, httpLog))
+	r.Get("/ping", handler.PingHandler(s.db, dbConnectionTimeout, httpLog))
+	return r
+}
 
+// run serves h on addr until ctx is cancelled or the listener fails,
+// then shuts the server down gracefully.
+func run(ctx context.Context, addr string, h http.Handler, log *zap.Logger) error {
 	srv := &http.Server{
-		Addr:    cfg.serverAddress,
-		Handler: r,
+		Addr:    addr,
+		Handler: h,
 	}
 
 	serverErr := make(chan error, 1)
 	go func() {
-		log.Info("Running server", zap.String("address", cfg.serverAddress))
+		log.Info("Running server", zap.String("address", addr))
 		serverErr <- srv.ListenAndServe()
 	}()
 
@@ -123,33 +100,8 @@ func run() error {
 		log.Info("Shutting down server")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		err = srv.Shutdown(shutdownCtx)
-	case err = <-serverErr:
+		return srv.Shutdown(shutdownCtx)
+	case err := <-serverErr:
+		return err
 	}
-
-	// Cancel ctx (if a listen error got us here) and wait for the final snapshot,
-	// which runs after in-flight requests have been drained by Shutdown.
-	stop()
-	if snapshotDone != nil {
-		<-snapshotDone
-	}
-	return err
-}
-
-func normalizeHelpArg(args []string) []string {
-	normalized := make([]string, len(args))
-	copy(normalized, args)
-	for i, arg := range normalized {
-		if arg == "--help" {
-			normalized[i] = "-h"
-		}
-	}
-	return normalized
-}
-
-func resolveLogLevel() string {
-	if envLogLevel, ok := os.LookupEnv("LOG_LEVEL"); ok {
-		return envLogLevel
-	}
-	return "INFO"
 }

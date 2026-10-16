@@ -23,6 +23,18 @@ import (
 // shutdownFlushTimeout bounds the whole final report, not a single request.
 const shutdownFlushTimeout = 5 * time.Second
 
+// metricStore is the agent's local buffer of collected metrics.
+//
+// Invariant: at most one report is in flight at a time. reportOnceJSON takes a
+// Snapshot, sends it and then calls SubtractCounters with the same batch.
+// SubtractCounters is not idempotent: if two reports overlapped, both would
+// snapshot and send the same counter deltas, the server would add them twice,
+// and both subtractions would drive the local counters negative.
+//
+// Today this holds because Run starts a single reportLoop, which reports
+// sequentially, and the final flush runs only after that loop has stopped.
+// Adding a second sender or a parallel flush requires versioning the batch
+// (e.g. subtract only deltas of a snapshot that was not yet acknowledged).
 type metricStore interface {
 	UpdateBatch(ctx context.Context, metrics []models.Metrics) error
 	Snapshot() []models.Metrics
@@ -214,6 +226,8 @@ func (a *Agent) post(ctx context.Context, reqURL string, compressedBody []byte) 
 // Polls keep running in their own goroutine while the batch is in flight
 // (see Run). Subtracting the sent deltas, rather than resetting counters to
 // zero, keeps the increments made meanwhile.
+//
+// Must not run concurrently with itself: see the invariant on metricStore.
 func (a *Agent) reportOnceJSON(ctx context.Context) {
 	if ctx.Err() != nil {
 		a.logReportInterrupted(ctx)

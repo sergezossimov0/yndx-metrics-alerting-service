@@ -91,7 +91,7 @@ func UpdateMetricsBatchJSONHandler(updater MetricBatchUpdater, log *zap.Logger) 
 
 		for i := range req {
 			if err := validateMetricRequest(&req[i]); err != nil {
-				http.Error(w, fmt.Sprintf("metric #%d %q: %v", i, req[i].ID, err), http.StatusBadRequest)
+				http.Error(w, fmt.Sprintf("batch item #%d: %v", i, err), http.StatusBadRequest)
 				return
 			}
 		}
@@ -108,27 +108,37 @@ func UpdateMetricsBatchJSONHandler(updater MetricBatchUpdater, log *zap.Logger) 
 	}
 }
 
+// validateMetricRequest checks a metric for /update/ and /updates/. Errors name
+// the metric (`metric "Alloc": invalid gauge value`), so both endpoints share
+// one format; a batch only prefixes the item position. A missing name is
+// returned as is, since there is nothing to name.
 func validateMetricRequest(req *models.Metrics) error {
 	if req.ID == "" {
 		return errMetricNameMissing
 	}
 
 	if req.MType == "" {
-		return errMetricTypeMissing
+		return metricError(req.ID, errMetricTypeMissing)
 	}
 
 	switch req.MType {
 	case models.Gauge:
 		if req.Value == nil {
-			return errInvalidGaugeValue
+			return metricError(req.ID, errInvalidGaugeValue)
 		}
 	case models.Counter:
 		if req.Delta == nil {
-			return errInvalidCounterValue
+			return metricError(req.ID, errInvalidCounterValue)
 		}
 	default:
-		return errInvalidMetricType
+		return metricError(req.ID, errInvalidMetricType)
 	}
 
 	return nil
+}
+
+// metricError attaches the metric name to a validation error, keeping it
+// matchable with errors.Is.
+func metricError(name string, err error) error {
+	return fmt.Errorf("metric %q: %w", name, err)
 }

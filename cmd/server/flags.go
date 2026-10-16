@@ -1,109 +1,34 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/config"
 )
 
-type intervalValid struct {
-	interval time.Duration
-	isSet    bool
-}
-
-type restoreValid struct {
-	isRestore bool
-	isSet     bool
-}
-
-type config struct {
+type serverConfig struct {
 	serverAddress   string
-	storeInterval   intervalValid // default 300 seconds, 0 means synchronous writes, negative is invalid
+	storeInterval   config.Interval // default 300 seconds, 0 means synchronous writes, negative is invalid
 	fileStoragePath string
-	restore         restoreValid
+	restore         bool
 	dbConnection    string
 }
 
-func (i *intervalValid) Set(value string) error {
-	intervalInt, err := strconv.Atoi(value)
-	if err != nil {
-		return fmt.Errorf("error parsing interval: %w", err)
+// ---- resolveConfig reads configuration from command line arguments and environment variables.
+// Priority is resolved in one place, in order: built-in values, then flags, then env on top.
+
+func resolveConfig() (*serverConfig, error) {
+	cfg := &serverConfig{
+		storeInterval: config.Interval{
+			Duration:  300 * time.Second,
+			AllowZero: true,
+		},
 	}
 
-	if err := i.UpdateToSecond(intervalInt); err != nil {
-		return err
-	}
-	i.isSet = true
-	return nil
-}
-
-func (i *intervalValid) UpdateToSecond(sec int) error {
-	if sec < 0 {
-		return fmt.Errorf("interval must be >= 0, got %d", sec)
-	}
-	i.interval = time.Duration(sec) * time.Second
-	return nil
-}
-
-func (r *restoreValid) Set(value string) error {
-	restoreBool, err := strconv.ParseBool(value)
-	if err != nil {
-		return fmt.Errorf("error parsing restore: %w", err)
-	}
-	r.isRestore = restoreBool
-	r.isSet = true
-	return nil
-}
-
-func (c config) validation() bool {
-	return c.serverAddress != "" && c.storeInterval.isSet && c.fileStoragePath != "" && c.restore.isSet && c.dbConnection != ""
-}
-
-// ---- resolveConfig reads configuration from environment variables and command line arguments.
-
-func resolveConfig() (*config, error) {
-	cfg := &config{}
-
-	// environment variables take precedence over command line arguments
-	if envServerAddr, ok := os.LookupEnv("ADDRESS"); ok {
-		cfg.serverAddress = envServerAddr
-	}
-
-	// STORE_INTERVAL: default 300 seconds, 0 means synchronous writes, negative is invalid
-	storeIntervalValid := intervalValid{}
-	cfg.storeInterval = storeIntervalValid
-	if envStoreInterval, ok := os.LookupEnv("STORE_INTERVAL"); ok {
-		err := cfg.storeInterval.Set(envStoreInterval)
-		if err != nil {
-			return nil, errors.New("failed to set STORE_INTERVAL:" + err.Error())
-		}
-	}
-
-	if envFileStoragePath, ok := os.LookupEnv("FILE_STORAGE_PATH"); ok {
-		cfg.fileStoragePath = envFileStoragePath
-	}
-
-	rv := restoreValid{}
-	cfg.restore = rv
-	if envRestore, ok := os.LookupEnv("RESTORE"); ok {
-		err := cfg.restore.Set(envRestore)
-		if err != nil {
-			return nil, errors.New("failed to set RESTORE:" + err.Error())
-		}
-	}
-
-	if envDBConnection, ok := os.LookupEnv("DATABASE_DSN"); ok {
-		cfg.dbConnection = envDBConnection
-	}
-
-	if cfg.validation() {
-		return cfg, nil
-	}
-
-	// parse command line arguments
 	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() {
@@ -112,36 +37,50 @@ func resolveConfig() (*config, error) {
 		fs.PrintDefaults()
 	}
 
-	serverAddr := fs.String("a", "localhost:8080", "HTTP server address")
-	storeInterval := fs.Int("i", 300, "store interval in seconds (0 makes writes synchronous)")
-	fileStoragePath := fs.String("f", "metrics-db.json", "file storage path")
-	restoreFlag := fs.Bool("r", true, "restore previously saved metrics on startup")
-	dbConnectionFlag := fs.String("d", "", "database connection string (DSN)")
+	fs.StringVar(&cfg.serverAddress, "a", "localhost:8080", "HTTP server address")
+	fs.Var(&cfg.storeInterval, "i", "store interval in seconds (0 makes writes synchronous)")
+	fs.StringVar(&cfg.fileStoragePath, "f", "metrics-db.json", "file storage path")
+	fs.BoolVar(&cfg.restore, "r", true, "restore previously saved metrics on startup")
+	fs.StringVar(&cfg.dbConnection, "d", "", "database connection string (DSN)")
 
-	if err := fs.Parse(normalizeHelpArg(os.Args[1:])); err != nil {
+	if err := fs.Parse(config.NormalizeHelpArg(os.Args[1:])); err != nil {
 		return nil, err
 	}
 
-	if cfg.serverAddress == "" {
-		cfg.serverAddress = *serverAddr
+	if err := applyEnv(cfg); err != nil {
+		return nil, err
 	}
-	if !cfg.storeInterval.isSet {
-		err := cfg.storeInterval.UpdateToSecond(*storeInterval)
-		if err != nil {
-			return nil, errors.New("failed to set STORE_INTERVAL from flag:" + err.Error())
+	return cfg, nil
+}
+
+// applyEnv overrides flag values with environment variables.
+// Declared but empty string variables are treated as unset and keep the flag value;
+// empty STORE_INTERVAL and RESTORE are parse errors.
+func applyEnv(cfg *serverConfig) error {
+	if v, ok := os.LookupEnv("ADDRESS"); ok && v != "" {
+		cfg.serverAddress = v
+	}
+
+	if v, ok := os.LookupEnv("STORE_INTERVAL"); ok {
+		if err := cfg.storeInterval.Set(v); err != nil {
+			return fmt.Errorf("failed to set STORE_INTERVAL: %w", err)
 		}
 	}
 
-	if cfg.fileStoragePath == "" {
-		cfg.fileStoragePath = *fileStoragePath
+	if v, ok := os.LookupEnv("FILE_STORAGE_PATH"); ok && v != "" {
+		cfg.fileStoragePath = v
 	}
 
-	if !cfg.restore.isSet {
-		cfg.restore.isRestore = *restoreFlag
+	if v, ok := os.LookupEnv("RESTORE"); ok {
+		restore, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("failed to set RESTORE: %w", err)
+		}
+		cfg.restore = restore
 	}
 
-	if cfg.dbConnection == "" {
-		cfg.dbConnection = *dbConnectionFlag
+	if v, ok := os.LookupEnv("DATABASE_DSN"); ok && v != "" {
+		cfg.dbConnection = v
 	}
-	return cfg, nil
+	return nil
 }

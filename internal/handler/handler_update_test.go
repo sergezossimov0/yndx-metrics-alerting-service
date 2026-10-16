@@ -194,7 +194,7 @@ func TestUpdateMetricsJSONHandler_RejectsIncompleteMetricAndDoesNotStoreIt(t *te
 	}
 
 	body, _ := io.ReadAll(res.Body)
-	if strings.TrimSpace(string(body)) != "invalid gauge value" {
+	if strings.TrimSpace(string(body)) != `metric "Alloc": invalid gauge value` {
 		t.Fatalf("expected only the validation error in the body, got %q", string(body))
 	}
 
@@ -213,7 +213,7 @@ func TestUpdateMetricsJSONHandler_RejectsUnknownMetricTypeAndDoesNotStoreIt(t *t
 	}
 
 	body, _ := io.ReadAll(res.Body)
-	if strings.TrimSpace(string(body)) != "invalid metric type" {
+	if strings.TrimSpace(string(body)) != `metric "Alloc": invalid metric type` {
 		t.Fatalf("expected only the validation error in the body, got %q", string(body))
 	}
 
@@ -411,11 +411,42 @@ func TestUpdateMetricsBatchJSONHandler_RejectsWholeBatchWhenOneMetricIsInvalid(t
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
 	}
-	if !strings.Contains(res.Body.String(), "PollCount") {
-		t.Fatalf("expected the error to name the invalid metric, got %q", res.Body.String())
+	if got, want := strings.TrimSpace(res.Body.String()), `batch item #1: metric "PollCount": invalid counter value`; got != want {
+		t.Fatalf("expected body %q, got %q", want, got)
 	}
 	if len(store.Snapshot()) != 0 {
 		t.Fatalf("expected nothing to be stored, got %+v", store.Snapshot())
+	}
+}
+
+func TestUpdateHandlers_ValidationErrorFormatIsSymmetric(t *testing.T) {
+	// the batch message is the single-metric message prefixed with the item position
+	g := 1.5
+	tests := []struct {
+		name   string
+		metric models.Metrics
+	}{
+		{"missing value", models.Metrics{ID: "Alloc", MType: models.Gauge}},
+		{"missing type", models.Metrics{ID: "Alloc"}},
+		{"unknown type", models.Metrics{ID: "Alloc", MType: "unknown"}},
+		{"missing name", models.Metrics{MType: models.Gauge, Value: &g}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _ := newTestHandler()
+
+			single := postMetric(h, &tt.metric)
+			batch := postBatch(h, []models.Metrics{{ID: "Ok", MType: models.Gauge, Value: &g}, tt.metric})
+
+			if single.Code != http.StatusBadRequest || batch.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 from both endpoints, got %d and %d", single.Code, batch.Code)
+			}
+			want := "batch item #1: " + strings.TrimSpace(single.Body.String())
+			if got := strings.TrimSpace(batch.Body.String()); got != want {
+				t.Fatalf("expected batch body %q, got %q", want, got)
+			}
+		})
 	}
 }
 
