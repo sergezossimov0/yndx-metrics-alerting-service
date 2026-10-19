@@ -13,6 +13,7 @@ type agentConfig struct {
 	serverAddress  string
 	reportInterval config.Interval // must be > 0
 	pollInterval   config.Interval // must be > 0
+	key            string          // empty disables signing
 }
 
 // resolveConfig reads configuration from command line arguments and environment variables.
@@ -34,6 +35,7 @@ func resolveConfig() (*agentConfig, error) {
 	fs.StringVar(&cfg.serverAddress, "a", "localhost:8080", "HTTP server address")
 	fs.Var(&cfg.reportInterval, "r", "report interval in seconds")
 	fs.Var(&cfg.pollInterval, "p", "poll interval in seconds")
+	fs.StringVar(&cfg.key, "k", "", "key for signing request bodies (HashSHA256 header)")
 
 	if err := fs.Parse(config.NormalizeHelpArg(os.Args[1:])); err != nil {
 		return nil, err
@@ -46,7 +48,7 @@ func resolveConfig() (*agentConfig, error) {
 }
 
 // applyEnv overrides flag values with environment variables.
-// A declared but empty ADDRESS is treated as unset and keeps the flag value;
+// A declared but empty ADDRESS or KEY is treated as unset and keeps the flag value;
 // empty intervals are parse errors.
 func applyEnv(cfg *agentConfig) error {
 	if v, ok := os.LookupEnv("ADDRESS"); ok && v != "" {
@@ -63,6 +65,10 @@ func applyEnv(cfg *agentConfig) error {
 		if err := cfg.pollInterval.Set(v); err != nil {
 			return fmt.Errorf("failed to set POLL_INTERVAL: %w", err)
 		}
+	}
+
+	if v, ok := os.LookupEnv("KEY"); ok && v != "" {
+		cfg.key = v
 	}
 	return nil
 }

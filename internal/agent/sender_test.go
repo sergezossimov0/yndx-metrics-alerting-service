@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -14,6 +15,7 @@ import (
 
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/signature"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -557,5 +559,83 @@ func TestReportOnceJSON_DoesNotLogSuccessWhenSendFails(t *testing.T) {
 
 	if n := logs.FilterMessage("metrics batch sent").Len(); n != 0 {
 		t.Fatalf("expected no success entry after a failed send, got %d: %v", n, logs.All())
+	}
+}
+
+// signatureServer records the HashSHA256 header and the decompressed body of
+// the last request it receives.
+func signatureServer(t *testing.T) (*httptest.Server, func() (sig string, body []byte)) {
+	t.Helper()
+	var (
+		mu      sync.Mutex
+		gotSig  string
+		gotBody []byte
+	)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		defer zr.Close()
+		body, err := io.ReadAll(zr)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		mu.Lock()
+		gotSig = r.Header.Get(signature.Header)
+		gotBody = body
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+	return ts, func() (string, []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotSig, gotBody
+	}
+}
+
+func TestSendBatchJSON_SignsUncompressedBodyWhenKeySet(t *testing.T) {
+	ts, last := signatureServer(t)
+	key := []byte("secret")
+	a := NewAgent(ts.URL, 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop(), WithSignKey(key))
+
+	if err := a.sendBatchJSON(context.Background(), []models.Metrics{gaugeMetric("Alloc", 1.5)}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sig, body := last()
+	if sig == "" {
+		t.Fatalf("expected %s header to be set", signature.Header)
+	}
+	if !signature.Verify(body, key, sig) {
+		t.Fatalf("expected %s to sign the uncompressed body %q, got %s", signature.Header, body, sig)
+	}
+}
+
+func TestSendBatchJSON_DoesNotSignWithoutKey(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []Option
+	}{
+		{name: "no option"},
+		{name: "empty key", opts: []Option{WithSignKey([]byte(""))}},
+		{name: "nil key", opts: []Option{WithSignKey(nil)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts, last := signatureServer(t)
+			a := NewAgent(ts.URL, 2*time.Second, 10*time.Second, repository.NewMemStorage(), zap.NewNop(), tt.opts...)
+
+			if err := a.sendBatchJSON(context.Background(), []models.Metrics{gaugeMetric("Alloc", 1.5)}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if sig, _ := last(); sig != "" {
+				t.Fatalf("expected no %s header without a key, got %q", signature.Header, sig)
+			}
+		})
 	}
 }

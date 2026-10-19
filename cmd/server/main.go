@@ -50,6 +50,8 @@ func start() error {
 	}
 	defer log.Sync()
 
+	log.Info("server starting", zap.Bool("signing", cfg.key != "")) // never log the key itself
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -60,16 +62,20 @@ func start() error {
 	// runs after run has returned, i.e. after Shutdown drained in-flight requests
 	defer s.close()
 
-	return run(ctx, cfg.serverAddress, newRouter(s, log), log)
+	return run(ctx, cfg.serverAddress, newRouter(s, []byte(cfg.key), log), log)
 }
 
-func newRouter(s *storage, log *zap.Logger) http.Handler {
+// newRouter wires the handlers. An empty signKey disables the HashSHA256
+// check of requests and the signing of responses.
+func newRouter(s *storage, signKey []byte, log *zap.Logger) http.Handler {
 	uc := usecase.NewMetricUpdate(s.update)
 	readUC := usecase.NewMetricRead(s.read)
 	r := chi.NewRouter()
 
 	httpLog := log.With(zap.String("component", "http"))
-	r.Use(handler.WithLogging(httpLog), handler.CompressionHandler(httpLog))
+	// WithSignature goes after CompressionHandler: the signatures of both the
+	// request and the response cover the uncompressed body
+	r.Use(handler.WithLogging(httpLog), handler.CompressionHandler(httpLog), handler.WithSignature(signKey, httpLog))
 
 	r.Post("/update/", handler.UpdateMetricsJSONHandler(&uc, httpLog))
 	r.Post("/updates/", handler.UpdateMetricsBatchJSONHandler(&uc, httpLog))

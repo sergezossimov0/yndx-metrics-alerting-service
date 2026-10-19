@@ -17,6 +17,7 @@ import (
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/compress"
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/retry"
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/signature"
 	"go.uber.org/zap"
 )
 
@@ -48,11 +49,21 @@ type Agent struct {
 	reportInterval time.Duration
 	client         *http.Client
 	retry          retry.Policy
+	signKey        []byte // empty disables signing
 	log            *zap.Logger
 }
 
-func NewAgent(serverAddr string, pollInterval, reportInterval time.Duration, storage metricStore, log *zap.Logger) *Agent {
-	return &Agent{
+// Option configures optional Agent settings.
+type Option func(*Agent)
+
+// WithSignKey makes the agent sign request bodies with key and send the
+// signature in the HashSHA256 header. An empty key disables signing.
+func WithSignKey(key []byte) Option {
+	return func(a *Agent) { a.signKey = key }
+}
+
+func NewAgent(serverAddr string, pollInterval, reportInterval time.Duration, storage metricStore, log *zap.Logger, opts ...Option) *Agent {
+	a := &Agent{
 		store:          storage,
 		serverAddr:     serverAddr,
 		pollInterval:   pollInterval,
@@ -70,6 +81,10 @@ func NewAgent(serverAddr string, pollInterval, reportInterval time.Duration, sto
 		},
 		log: log,
 	}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 // statusError is a response with a status other than 200 OK.
@@ -175,6 +190,10 @@ func (a *Agent) sendBatchJSON(ctx context.Context, batch []models.Metrics) error
 // the server. Any status other than 200 OK is an error. Temporary failures
 // are retried according to a.retry; the body is compressed once and a new
 // request is built for every attempt, since a sent request body is consumed.
+//
+// With a sign key the uncompressed JSON is signed, not the gzip stream: the
+// server checks the signature after decompressing, so it does not depend on
+// how the body was compressed.
 func (a *Agent) postGzipJSON(ctx context.Context, path string, body easyjson.Marshaler) error {
 	reqURL := strings.TrimRight(a.serverAddr, "/") + path
 
@@ -183,24 +202,33 @@ func (a *Agent) postGzipJSON(ctx context.Context, path string, body easyjson.Mar
 		return err
 	}
 
+	var sig string
+	if len(a.signKey) > 0 {
+		sig = signature.Sum(reqBody, a.signKey)
+	}
+
 	compressedBody, err := compress.Compress(reqBody)
 	if err != nil {
 		return err
 	}
 
 	return a.retry.Do(ctx, func(ctx context.Context) error {
-		return a.post(ctx, reqURL, compressedBody)
+		return a.post(ctx, reqURL, compressedBody, sig)
 	})
 }
 
 // post makes a single attempt to send an already compressed JSON body.
-func (a *Agent) post(ctx context.Context, reqURL string, compressedBody []byte) error {
+// An empty sig sends the request without the HashSHA256 header.
+func (a *Agent) post(ctx context.Context, reqURL string, compressedBody []byte, sig string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(compressedBody))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
+	if sig != "" {
+		req.Header.Set(signature.Header, sig)
+	}
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return err

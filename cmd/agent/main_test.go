@@ -66,7 +66,7 @@ func unsetEnv(t *testing.T, key string) {
 
 func unsetAllAgentEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"ADDRESS", "REPORT_INTERVAL", "POLL_INTERVAL"} {
+	for _, key := range []string{"ADDRESS", "REPORT_INTERVAL", "POLL_INTERVAL", "KEY"} {
 		unsetEnv(t, key)
 	}
 }
@@ -76,6 +76,7 @@ type resolvedConfig struct {
 	serverAddress  string
 	reportInterval time.Duration
 	pollInterval   time.Duration
+	key            string
 }
 
 func resolved(c *agentConfig) resolvedConfig {
@@ -83,6 +84,7 @@ func resolved(c *agentConfig) resolvedConfig {
 		serverAddress:  c.serverAddress,
 		reportInterval: c.reportInterval.Duration,
 		pollInterval:   c.pollInterval.Duration,
+		key:            c.key,
 	}
 }
 
@@ -90,13 +92,14 @@ func TestResolveConfig_AllEnvVarsTakePrecedenceOverFlags(t *testing.T) {
 	t.Setenv("ADDRESS", "192.168.1.1:9090")
 	t.Setenv("REPORT_INTERVAL", "20")
 	t.Setenv("POLL_INTERVAL", "5")
-	withAgentArgs(t, []string{"-a", "localhost:1234", "-r", "15", "-p", "3"})
+	t.Setenv("KEY", "env-key")
+	withAgentArgs(t, []string{"-a", "localhost:1234", "-r", "15", "-p", "3", "-k", "flag-key"})
 
 	got, err := resolveConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := resolvedConfig{serverAddress: "192.168.1.1:9090", reportInterval: 20 * time.Second, pollInterval: 5 * time.Second}
+	want := resolvedConfig{serverAddress: "192.168.1.1:9090", reportInterval: 20 * time.Second, pollInterval: 5 * time.Second, key: "env-key"}
 	if !reflect.DeepEqual(resolved(got), want) {
 		t.Fatalf("expected %+v, got %+v", want, resolved(got))
 	}
@@ -116,13 +119,13 @@ func TestResolveConfig_FlagsAreParsedEvenWhenAllEnvSet(t *testing.T) {
 
 func TestResolveConfig_UsesFlagsWhenEnvNotSet(t *testing.T) {
 	unsetAllAgentEnv(t)
-	withAgentArgs(t, []string{"-a", "localhost:1234", "-r", "15", "-p", "3"})
+	withAgentArgs(t, []string{"-a", "localhost:1234", "-r", "15", "-p", "3", "-k", "flag-key"})
 
 	got, err := resolveConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := resolvedConfig{serverAddress: "localhost:1234", reportInterval: 15 * time.Second, pollInterval: 3 * time.Second}
+	want := resolvedConfig{serverAddress: "localhost:1234", reportInterval: 15 * time.Second, pollInterval: 3 * time.Second, key: "flag-key"}
 	if !reflect.DeepEqual(resolved(got), want) {
 		t.Fatalf("expected %+v, got %+v", want, resolved(got))
 	}
@@ -146,6 +149,7 @@ func TestResolveConfig_PartialEnvMergesWithFlags(t *testing.T) {
 	t.Setenv("ADDRESS", "192.168.1.1:9090")
 	unsetEnv(t, "REPORT_INTERVAL")
 	unsetEnv(t, "POLL_INTERVAL")
+	unsetEnv(t, "KEY")
 	withAgentArgs(t, []string{"-r", "15", "-p", "3"})
 
 	got, err := resolveConfig()
@@ -171,6 +175,21 @@ func TestResolveConfig_EmptyAddressEnvFallsBackToFlag(t *testing.T) {
 	}
 	if got.serverAddress != "localhost:1234" {
 		t.Fatalf("expected serverAddress to fall back to flag value, got %q", got.serverAddress)
+	}
+}
+
+func TestResolveConfig_EmptyKeyEnvFallsBackToFlag(t *testing.T) {
+	// a declared but empty KEY counts as unset and must not turn signing off
+	unsetAllAgentEnv(t)
+	t.Setenv("KEY", "")
+	withAgentArgs(t, []string{"-k", "flag-key"})
+
+	got, err := resolveConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.key != "flag-key" {
+		t.Fatalf("expected key to fall back to flag value, got %q", got.key)
 	}
 }
 

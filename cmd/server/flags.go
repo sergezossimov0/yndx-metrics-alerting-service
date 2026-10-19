@@ -16,6 +16,7 @@ type serverConfig struct {
 	fileStoragePath string
 	restore         bool
 	dbConnection    string
+	key             string // empty disables signing
 }
 
 // ---- resolveConfig reads configuration from command line arguments and environment variables.
@@ -42,6 +43,7 @@ func resolveConfig() (*serverConfig, error) {
 	fs.StringVar(&cfg.fileStoragePath, "f", "metrics-db.json", "file storage path")
 	fs.BoolVar(&cfg.restore, "r", true, "restore previously saved metrics on startup")
 	fs.StringVar(&cfg.dbConnection, "d", "", "database connection string (DSN)")
+	fs.StringVar(&cfg.key, "k", "", "key for checking request and signing response bodies (HashSHA256 header)")
 
 	if err := fs.Parse(config.NormalizeHelpArg(os.Args[1:])); err != nil {
 		return nil, err
@@ -81,6 +83,10 @@ func applyEnv(cfg *serverConfig) error {
 
 	if v, ok := os.LookupEnv("DATABASE_DSN"); ok && v != "" {
 		cfg.dbConnection = v
+	}
+
+	if v, ok := os.LookupEnv("KEY"); ok && v != "" {
+		cfg.key = v
 	}
 	return nil
 }

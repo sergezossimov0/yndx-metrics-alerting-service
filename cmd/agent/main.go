@@ -45,6 +45,7 @@ func main() {
 		zap.String("address", baseURL),
 		zap.Duration("poll_interval", cfg.pollInterval.Duration),
 		zap.Duration("report_interval", cfg.reportInterval.Duration),
+		zap.Bool("signing", cfg.key != ""), // never log the key itself
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -52,7 +53,7 @@ func main() {
 
 	storage := repository.NewMemStorage()
 	newAgent := agent.NewAgent(baseURL, cfg.pollInterval.Duration, cfg.reportInterval.Duration, storage,
-		log.With(zap.String("component", "agent")))
+		log.With(zap.String("component", "agent")), agent.WithSignKey([]byte(cfg.key)))
 	newAgent.Run(ctx)
 
 	log.Info("agent stopped")

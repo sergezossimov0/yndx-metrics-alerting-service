@@ -13,6 +13,7 @@ import (
 
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
+	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/signature"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -65,8 +66,8 @@ func respondWith(code int) func(w http.ResponseWriter) {
 	return func(w http.ResponseWriter) { w.WriteHeader(code) }
 }
 
-func newRetryTestAgent(serverURL string, store metricStore) *Agent {
-	a := NewAgent(serverURL, 2*time.Second, 10*time.Second, store, zap.NewNop())
+func newRetryTestAgent(serverURL string, store metricStore, opts ...Option) *Agent {
+	a := NewAgent(serverURL, 2*time.Second, 10*time.Second, store, zap.NewNop(), opts...)
 	a.retry.Delays = testRetryDelays
 	return a
 }
@@ -118,6 +119,40 @@ func TestSendBatchJSON_RetriesOnServiceUnavailable(t *testing.T) {
 				t.Fatalf("expected 2 attempts, got %d", n)
 			}
 		})
+	}
+}
+
+func TestSendBatchJSON_RetrySendsSameSignature(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		sigs []string
+	)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		sigs = append(sigs, r.Header.Get(signature.Header))
+		n := len(sigs)
+		mu.Unlock()
+
+		if n == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(ts.Close)
+	a := newRetryTestAgent(ts.URL, repository.NewMemStorage(), WithSignKey([]byte("secret")))
+
+	if err := a.sendBatchJSON(context.Background(), []models.Metrics{gaugeMetric("Alloc", 1)}); err != nil {
+		t.Fatalf("expected the retry to succeed, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sigs) != 2 {
+		t.Fatalf("expected 2 attempts, got %d", len(sigs))
+	}
+	if sigs[0] == "" || sigs[0] != sigs[1] {
+		t.Fatalf("expected both attempts to carry the same non-empty signature, got %q", sigs)
 	}
 }
 
