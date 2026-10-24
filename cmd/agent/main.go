@@ -54,7 +54,10 @@ func main() {
 
 	storage := repository.NewMemStorage()
 	newAgent := agent.NewAgent(baseURL, cfg.pollInterval.Duration, cfg.reportInterval.Duration, storage,
-		log.With(zap.String("component", "agent")), agent.WithSignKey([]byte(cfg.key)), agent.WithRateLimit(cfg.rateLimit))
+		log.With(zap.String("component", "agent")),
+		agent.WithSignKey([]byte(cfg.key)),
+		agent.WithRateLimit(cfg.rateLimit),
+	)
 	newAgent.Run(ctx)
 
 	log.Info("agent stopped")

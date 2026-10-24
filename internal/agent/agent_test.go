@@ -166,6 +166,13 @@ func TestAgent_Run_LimitsConcurrentRequests(t *testing.T) {
 		maxInFlight atomic.Int64
 	)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only the pool is limited. The final batch (/updates/) goes after the
+		// pool has stopped, but it may still meet handlers of requests the
+		// client abandoned on cancel: time.Sleep below does not notice that.
+		if r.URL.Path != "/update/" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		n := inFlight.Add(1)
 		defer inFlight.Add(-1)
 		for {
@@ -201,5 +208,61 @@ func TestWithRateLimit_IgnoresValuesBelowOne(t *testing.T) {
 		if a.rateLimit != defaultRateLimit {
 			t.Fatalf("WithRateLimit(%d): expected the default %d, got %d", n, defaultRateLimit, a.rateLimit)
 		}
+	}
+}
+
+func TestAgent_Run_StopsWhenContextIsCancelled(t *testing.T) {
+	a := NewAgent("http://localhost:8080", time.Second, time.Second, &metricStoreMock{}, zap.NewNop())
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		a.Run(ctx)
+		close(done)
+	}()
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("expected Run to return after context cancellation")
+	}
+}
+
+func TestAgent_Run_CollectsAndReportsBeforeStopping(t *testing.T) {
+	var mu sync.Mutex
+	requestCount := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestCount++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	// sub-second intervals keep the test fast and deterministic
+	a := NewAgent(ts.URL, 15*time.Millisecond, 25*time.Millisecond, repository.NewMemStorage(), zap.NewNop())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		a.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("expected Run to return after context deadline")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if requestCount == 0 {
+		t.Fatal("expected at least one metrics batch to reach the server")
 	}
 }
