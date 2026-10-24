@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mailru/easyjson"
@@ -18,23 +19,31 @@ import (
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/retry"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/signature"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/mem"
 	"go.uber.org/zap"
 )
 
 // shutdownFlushTimeout bounds the whole final report, not a single request.
 const shutdownFlushTimeout = 5 * time.Second
 
+// defaultRateLimit is the number of send workers when WithRateLimit is not given.
+const defaultRateLimit = 1
+
 // metricStore is the agent's local buffer of collected metrics.
 //
-// Invariant: at most one report is in flight at a time. reportOnceJSON takes a
-// Snapshot, sends it and then calls SubtractCounters with the same batch.
+// Invariant: at most one report is in flight at a time. A report takes a
+// Snapshot, sends it and then calls SubtractCounters with what was sent.
 // SubtractCounters is not idempotent: if two reports overlapped, both would
 // snapshot and send the same counter deltas, the server would add them twice,
 // and both subtractions would drive the local counters negative.
 //
-// Today this holds because Run starts a single reportLoop, which reports
-// sequentially, and the final flush runs only after that loop has stopped.
-// Adding a second sender or a parallel flush requires versioning the batch
+// Today this holds because Run starts a single reportLoop, and reportViaPool
+// waits until the workers have handled every metric of its snapshot before
+// the loop can take the next one. The final flush runs only after that loop
+// has stopped. The workers send metrics of one snapshot in parallel, but each
+// metric once, so each counter delta is subtracted once.
+// Adding a second reporter or a parallel flush requires versioning the batch
 // (e.g. subtract only deltas of a snapshot that was not yet acknowledged).
 type metricStore interface {
 	UpdateBatch(ctx context.Context, metrics []models.Metrics) error
@@ -50,6 +59,7 @@ type Agent struct {
 	client         *http.Client
 	retry          retry.Policy
 	signKey        []byte // empty disables signing
+	rateLimit      int    // number of send workers, i.e. max concurrent requests
 	log            *zap.Logger
 }
 
@@ -60,6 +70,17 @@ type Option func(*Agent)
 // signature in the HashSHA256 header. An empty key disables signing.
 func WithSignKey(key []byte) Option {
 	return func(a *Agent) { a.signKey = key }
+}
+
+// WithRateLimit sets how many requests the agent may have in flight at once:
+// Run starts that many send workers. A value below 1 keeps the default of 1;
+// the agent config rejects such values before they get here.
+func WithRateLimit(n int) Option {
+	return func(a *Agent) {
+		if n >= 1 {
+			a.rateLimit = n
+		}
+	}
 }
 
 func NewAgent(serverAddr string, pollInterval, reportInterval time.Duration, storage metricStore, log *zap.Logger, opts ...Option) *Agent {
@@ -79,7 +100,8 @@ func NewAgent(serverAddr string, pollInterval, reportInterval time.Duration, sto
 					zap.Int("attempt", attempt), zap.Duration("delay", delay), zap.Error(err))
 			},
 		},
-		log: log,
+		rateLimit: defaultRateLimit,
+		log:       log,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -168,6 +190,46 @@ func (a *Agent) collectOnce(ctx context.Context) {
 	if err := a.store.UpdateBatch(ctx, batch); err != nil {
 		a.log.Error("collect metrics error", zap.Int("count", len(batch)), zap.Error(err))
 	}
+}
+
+// collectSystemOnce reads system memory and per-CPU utilization with gopsutil
+// and stores them as gauges: TotalMemory, FreeMemory and CPUutilization1..N,
+// one per logical CPU. If one source fails, the other is still stored.
+//
+// CPU utilization is measured since the previous call (interval 0), so the
+// call does not block and, run every pollInterval, each value covers one
+// poll interval. gopsutil keeps that previous sample in package state; the
+// agent has a single caller, so nothing else moves it.
+func (a *Agent) collectSystemOnce(ctx context.Context) {
+	var batch []models.Metrics
+
+	if vm, err := mem.VirtualMemoryWithContext(ctx); err != nil {
+		a.log.Error("collect memory metrics error", zap.Error(err))
+	} else {
+		batch = append(batch,
+			gaugeMetric("TotalMemory", float64(vm.Total)),
+			gaugeMetric("FreeMemory", float64(vm.Free)))
+	}
+
+	if percents, err := cpu.PercentWithContext(ctx, 0, true); err != nil {
+		a.log.Error("collect cpu metrics error", zap.Error(err))
+	} else {
+		for i, p := range percents {
+			batch = append(batch, gaugeMetric(fmt.Sprintf("CPUutilization%d", i+1), p))
+		}
+	}
+
+	if len(batch) == 0 {
+		return
+	}
+	// one UpdateBatch, so a snapshot never mixes values of two polls
+	if err := a.store.UpdateBatch(ctx, batch); err != nil {
+		a.log.Error("collect system metrics error", zap.Int("count", len(batch)), zap.Error(err))
+	}
+}
+
+func gaugeMetric(name string, value float64) models.Metrics {
+	return models.Metrics{ID: name, MType: models.Gauge, Value: &value}
 }
 
 // sendMetricJSON posts a single metric to POST /update/.
@@ -294,32 +356,121 @@ func (a *Agent) logSendError(msg string, count int, err error) {
 	a.log.Error(msg, zap.Int("count", count), zap.Error(err))
 }
 
+// sendJob is one metric for the send workers. done is called exactly once,
+// with the send error or nil, after the metric has been handled.
+type sendJob struct {
+	metric models.Metrics
+	done   func(err error)
+}
+
+// sendWorker sends metrics from jobs until the channel is closed. It does not
+// stop on ctx: after cancellation the sends fail at once, and the worker keeps
+// draining jobs so that reportViaPool, waiting for them, is not left hanging.
+func (a *Agent) sendWorker(ctx context.Context, jobs <-chan sendJob) {
+	for job := range jobs {
+		job.done(a.sendOne(ctx, job.metric))
+	}
+}
+
+// sendOne posts a single metric to POST /update/. Once the server has
+// accepted it, a counter's sent delta is subtracted; on failure the delta
+// stays and goes out with the next report.
+func (a *Agent) sendOne(ctx context.Context, metric models.Metrics) error {
+	if err := a.sendMetricJSON(ctx, &metric); err != nil {
+		a.logSendError("send metric error", 1, err)
+		return err
+	}
+	a.store.SubtractCounters(ctx, []models.Metrics{metric})
+	return nil
+}
+
+// reportViaPool hands every collected metric to the send workers and waits
+// until all of them are handled. The workers are the only goroutines that
+// send while Run is reporting, so at most rateLimit requests are in flight.
+// Waiting keeps reports from overlapping (see the invariant on metricStore).
+// An empty snapshot is not sent.
+func (a *Agent) reportViaPool(ctx context.Context, jobs chan<- sendJob) {
+	if ctx.Err() != nil {
+		a.logReportInterrupted(ctx)
+		return
+	}
+
+	batch := a.store.Snapshot()
+	if len(batch) == 0 {
+		return
+	}
+
+	start := time.Now()
+	var (
+		pending sync.WaitGroup
+		failed  atomic.Int64
+	)
+	done := func(err error) {
+		if err != nil {
+			failed.Add(1)
+		}
+		pending.Done()
+	}
+
+	pending.Add(len(batch))
+	for _, m := range batch {
+		jobs <- sendJob{metric: m, done: done}
+	}
+	pending.Wait()
+
+	// duration includes retries, so a slow or flaky server shows up here
+	a.log.Info("metrics sent",
+		zap.String("server", a.serverAddr),
+		zap.Int("count", len(batch)),
+		zap.Int64("failed", failed.Load()),
+		zap.Duration("duration", time.Since(start)))
+}
+
 // Run polls and reports until ctx is cancelled, then makes one final report.
 //
 // Polling and reporting run in separate goroutines, so a report that waits
 // between retries (up to ~9s, or ~21s if the server hangs) does not hold up
-// polling: PollCount stays exact and the next batch has fresh values. There
-// is still a single reporting goroutine, so batches never overlap. The store
+// polling: PollCount stays exact and the next report has fresh values. There
+// is still a single reporting goroutine, so reports never overlap. The store
 // is safe for concurrent use, and SubtractCounters keeps polls that happen
-// while a batch is in flight.
+// while a report is in flight.
+//
+// Reports are sent by a pool of rateLimit workers, started once for the whole
+// run, one metric per request.
+//
+// System metrics (gopsutil) are polled in a goroutine of their own, also every
+// pollInterval. They are not collected right away: the first CPU sample would
+// cover only the few microseconds since the agent started.
 func (a *Agent) Run(ctx context.Context) {
 	// first immediate collection
 	a.collectOnce(ctx)
 
+	jobs := make(chan sendJob)
+	var workers sync.WaitGroup
+	for range a.rateLimit {
+		workers.Go(func() { a.sendWorker(ctx, jobs) })
+	}
+
 	var wg sync.WaitGroup
-	wg.Go(func() { a.pollLoop(ctx) })
-	wg.Go(func() { a.reportLoop(ctx) })
+	wg.Go(func() { a.pollLoop(ctx, a.collectOnce) })
+	wg.Go(func() { a.pollLoop(ctx, a.collectSystemOnce) })
+	wg.Go(func() { a.reportLoop(ctx, jobs) })
 	wg.Wait()
 
-	// Both loops have stopped, so the final report runs alone and includes the
-	// last poll. ctx is already done, hence a fresh context for it.
+	// reportLoop has waited for every job it queued, so none is pending.
+	close(jobs)
+	workers.Wait()
+
+	// Everything else has stopped, so the final report runs alone and includes
+	// the last poll. ctx is already done, hence a fresh context for it. It is a
+	// single batch request, so it stays within any rate limit.
 	flushCtx, cancel := context.WithTimeout(context.Background(), shutdownFlushTimeout)
 	defer cancel()
 	a.reportOnceJSON(flushCtx)
 }
 
-// pollLoop collects metrics every pollInterval until ctx is cancelled.
-func (a *Agent) pollLoop(ctx context.Context) {
+// pollLoop runs collect every pollInterval until ctx is cancelled.
+func (a *Agent) pollLoop(ctx context.Context, collect func(context.Context)) {
 	ticker := time.NewTicker(a.pollInterval)
 	defer ticker.Stop()
 
@@ -328,15 +479,16 @@ func (a *Agent) pollLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			a.collectOnce(ctx)
+			collect(ctx)
 		}
 	}
 }
 
-// reportLoop sends a batch every reportInterval until ctx is cancelled. If a
-// report with retries outlasts the interval, the next one starts right after
-// it: ticks that arrive meanwhile are dropped by the ticker, not queued.
-func (a *Agent) reportLoop(ctx context.Context) {
+// reportLoop hands collected metrics to the send workers every reportInterval
+// until ctx is cancelled. If a report with retries outlasts the interval, the
+// next one starts right after it: ticks that arrive meanwhile are dropped by
+// the ticker, not queued.
+func (a *Agent) reportLoop(ctx context.Context, jobs chan<- sendJob) {
 	ticker := time.NewTicker(a.reportInterval)
 	defer ticker.Stop()
 
@@ -345,7 +497,7 @@ func (a *Agent) reportLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			a.reportOnceJSON(ctx)
+			a.reportViaPool(ctx, jobs)
 		}
 	}
 }

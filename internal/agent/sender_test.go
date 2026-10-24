@@ -16,6 +16,7 @@ import (
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/signature"
+	"github.com/shirou/gopsutil/v4/cpu"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -59,10 +60,6 @@ func (m *metricStoreMock) SubtractCounters(_ context.Context, sent []models.Metr
 func newObservedLogger() (*zap.Logger, *observer.ObservedLogs) {
 	core, logs := observer.New(zapcore.DebugLevel)
 	return zap.New(core), logs
-}
-
-func gaugeMetric(id string, v float64) models.Metrics {
-	return models.Metrics{ID: id, MType: models.Gauge, Value: &v}
 }
 
 func counterMetric(id string, d int64) models.Metrics {
@@ -277,6 +274,58 @@ func TestCollectOnceStoresMetrics(t *testing.T) {
 	}
 	if got := counters["PollCount"]; got != 2 {
 		t.Fatalf("expected PollCount=2 after two collects, got %d", got)
+	}
+}
+
+func TestCollectSystemOnce_StoresMemoryAndPerCPUGauges(t *testing.T) {
+	store := &metricStoreMock{}
+	a := NewAgent("http://localhost:8080", 2*time.Second, 10*time.Second, store, zap.NewNop())
+
+	a.collectSystemOnce(context.Background())
+
+	// one UpdateBatch, so a report never snapshots half of a poll
+	if len(store.updates) != 1 {
+		t.Fatalf("expected one UpdateBatch, got %d", len(store.updates))
+	}
+	got := make(map[string]float64)
+	for _, m := range store.updates[0] {
+		if m.MType != models.Gauge || m.Value == nil {
+			t.Fatalf("expected only gauges, got %+v", m)
+		}
+		got[m.ID] = *m.Value
+	}
+
+	if got["TotalMemory"] <= 0 {
+		t.Fatalf("expected TotalMemory > 0, got %v", got["TotalMemory"])
+	}
+	if free, ok := got["FreeMemory"]; !ok || free > got["TotalMemory"] {
+		t.Fatalf("expected FreeMemory within TotalMemory %v, got %v (present=%v)", got["TotalMemory"], free, ok)
+	}
+
+	nCPU, err := cpu.Counts(true)
+	if err != nil {
+		t.Fatalf("count CPUs: %v", err)
+	}
+	for i := 1; i <= nCPU; i++ {
+		name := fmt.Sprintf("CPUutilization%d", i)
+		v, ok := got[name]
+		if !ok || v < 0 || v > 100 {
+			t.Fatalf("expected %s in [0, 100], got %v (present=%v)", name, v, ok)
+		}
+	}
+	if want := 2 + nCPU; len(got) != want {
+		t.Fatalf("expected %d metrics (2 memory + %d CPU), got %d: %v", want, nCPU, len(got), got)
+	}
+}
+
+func TestCollectSystemOnce_LogsErrorWhenStoreUpdateFails(t *testing.T) {
+	log, logs := newObservedLogger()
+	a := NewAgent("http://localhost:8080", 2*time.Second, 10*time.Second, &metricStoreMock{updateErr: errors.New("store unavailable")}, log)
+
+	a.collectSystemOnce(context.Background())
+
+	if logs.FilterMessage("collect system metrics error").Len() != 1 {
+		t.Fatalf("expected one collect error to be logged, got %v", logs.All())
 	}
 }
 
