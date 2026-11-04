@@ -1,6 +1,7 @@
 package usecase
 
 import (
+	"context"
 	"testing"
 )
 
@@ -13,24 +14,24 @@ type metricReadStoreMock struct {
 	listCountersCalled int
 }
 
-func (m *metricReadStoreMock) GetGauge(name string) (float64, bool) {
+func (m *metricReadStoreMock) GetGauge(_ context.Context, name string) (float64, bool) {
 	m.getGaugeCalled++
 	v, ok := m.gauges[name]
 	return v, ok
 }
 
-func (m *metricReadStoreMock) GetCounter(name string) (int64, bool) {
+func (m *metricReadStoreMock) GetCounter(_ context.Context, name string) (int64, bool) {
 	m.getCounterCalled++
 	v, ok := m.counters[name]
 	return v, ok
 }
 
-func (m *metricReadStoreMock) ListGauges() map[string]float64 {
+func (m *metricReadStoreMock) ListGauges(_ context.Context) map[string]float64 {
 	m.listGaugesCalled++
 	return m.gauges
 }
 
-func (m *metricReadStoreMock) ListCounters() map[string]int64 {
+func (m *metricReadStoreMock) ListCounters(_ context.Context) map[string]int64 {
 	m.listCountersCalled++
 	return m.counters
 }
@@ -39,7 +40,7 @@ func TestMetricRead_GetGauge_ReturnsValueFromStore(t *testing.T) {
 	store := &metricReadStoreMock{gauges: map[string]float64{"Alloc": 10.5}}
 	mr := NewMetricRead(store)
 
-	value, ok := mr.GetGauge("Alloc")
+	value, ok := mr.GetGauge(context.Background(), "Alloc")
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -55,7 +56,7 @@ func TestMetricRead_GetGauge_ReturnsFalseWhenMissing(t *testing.T) {
 	store := &metricReadStoreMock{gauges: map[string]float64{}}
 	mr := NewMetricRead(store)
 
-	_, ok := mr.GetGauge("Unknown")
+	_, ok := mr.GetGauge(context.Background(), "Unknown")
 	if ok {
 		t.Fatal("expected ok=false")
 	}
@@ -65,7 +66,7 @@ func TestMetricRead_GetCounter_ReturnsValueFromStore(t *testing.T) {
 	store := &metricReadStoreMock{counters: map[string]int64{"PollCount": 3}}
 	mr := NewMetricRead(store)
 
-	value, ok := mr.GetCounter("PollCount")
+	value, ok := mr.GetCounter(context.Background(), "PollCount")
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -81,7 +82,7 @@ func TestMetricRead_GetCounter_ReturnsFalseWhenMissing(t *testing.T) {
 	store := &metricReadStoreMock{counters: map[string]int64{}}
 	mr := NewMetricRead(store)
 
-	_, ok := mr.GetCounter("Unknown")
+	_, ok := mr.GetCounter(context.Background(), "Unknown")
 	if ok {
 		t.Fatal("expected ok=false")
 	}
@@ -91,7 +92,7 @@ func TestMetricRead_ListGauges_ReturnsAllGaugesFromStore(t *testing.T) {
 	store := &metricReadStoreMock{gauges: map[string]float64{"Alloc": 10.5, "HeapAlloc": 22.3}}
 	mr := NewMetricRead(store)
 
-	gauges := mr.ListGauges()
+	gauges := mr.ListGauges(context.Background())
 	if len(gauges) != 2 {
 		t.Fatalf("expected 2 gauges, got %d", len(gauges))
 	}
@@ -107,7 +108,7 @@ func TestMetricRead_ListCounters_ReturnsAllCountersFromStore(t *testing.T) {
 	store := &metricReadStoreMock{counters: map[string]int64{"PollCount": 3}}
 	mr := NewMetricRead(store)
 
-	counters := mr.ListCounters()
+	counters := mr.ListCounters(context.Background())
 	if len(counters) != 1 {
 		t.Fatalf("expected 1 counter, got %d", len(counters))
 	}

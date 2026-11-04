@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -34,7 +35,8 @@ func UpdateMetricsHandler(updater MetricUpdater, log *zap.Logger) http.HandlerFu
 			return
 		}
 
-		if err := updater.UpdateMetric(metric); err != nil {
+		ctx := r.Context()
+		if err := updater.UpdateMetric(ctx, metric); err != nil {
 			// server error: logged, the client only gets a generic message
 			log.Error(msgFailedUpdateMetric,
 				zap.String("metric", metric.ID), zap.String("type", metric.MType), zap.Error(err))
@@ -53,7 +55,8 @@ func GetMetricValueHandler(reader MetricReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		req := models.Metrics{ID: chi.URLParam(r, "name"), MType: chi.URLParam(r, "type")}
 
-		if err := validateMetricTypeRequest(&req, reader); err != nil {
+		ctx := r.Context()
+		if err := validateMetricTypeRequest(ctx, &req, reader); err != nil {
 			if errors.Is(err, errMetricNotFound) || errors.Is(err, errMetricNameMissing) {
 				http.NotFound(w, r)
 				return
@@ -76,19 +79,29 @@ func GetMetricValueHandler(reader MetricReader) http.HandlerFunc {
 }
 
 // parseURLMetric converts raw URL path parts into a metric, validated the
-// same way as a JSON request.
+// same way as a JSON request. Parse failures keep the strconv error as
+// context, so the client sees which value was rejected and why.
 func parseURLMetric(metricType, name, rawValue string) (*models.Metrics, error) {
+	// a missing name must win over a bad value: it maps to 404, not 400
+	if name == "" {
+		return nil, errMetricNameMissing
+	}
+
 	metric := &models.Metrics{ID: name, MType: metricType}
 
 	switch metricType {
 	case models.Gauge:
-		if v, err := strconv.ParseFloat(rawValue, 64); err == nil {
-			metric.Value = &v
+		v, err := strconv.ParseFloat(rawValue, 64)
+		if err != nil {
+			return nil, metricError(name, fmt.Errorf("%w: %w", errInvalidGaugeValue, err))
 		}
+		metric.Value = &v
 	case models.Counter:
-		if d, err := strconv.ParseInt(rawValue, 10, 64); err == nil {
-			metric.Delta = &d
+		d, err := strconv.ParseInt(rawValue, 10, 64)
+		if err != nil {
+			return nil, metricError(name, fmt.Errorf("%w: %w", errInvalidCounterValue, err))
 		}
+		metric.Delta = &d
 	}
 
 	if err := validateMetricRequest(metric); err != nil {

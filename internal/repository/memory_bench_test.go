@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"sync/atomic"
@@ -32,7 +33,7 @@ func BenchmarkMemStorage(b *testing.B) {
 			s := NewMemStorage()
 			for i, k := range keys {
 				v := float64(i)
-				_ = s.Update(&models.Metrics{ID: k, MType: models.Gauge, Value: &v})
+				_ = s.Update(context.Background(), &models.Metrics{ID: k, MType: models.Gauge, Value: &v})
 			}
 
 			var op atomic.Uint64
@@ -44,9 +45,9 @@ func BenchmarkMemStorage(b *testing.B) {
 					k := keys[i%metrics]
 					if int(i%100) < writePercent {
 						v := float64(i)
-						_ = s.Update(&models.Metrics{ID: k, MType: models.Gauge, Value: &v})
+						_ = s.Update(context.Background(), &models.Metrics{ID: k, MType: models.Gauge, Value: &v})
 					} else {
-						_, _ = s.GetGauge(k)
+						_, _ = s.GetGauge(context.Background(), k)
 					}
 				}
 			})

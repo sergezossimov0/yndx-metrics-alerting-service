@@ -56,8 +56,21 @@ func (s *Snapshot) restore() {
 // Update stores the metric and synchronously writes a snapshot to disk. A
 // failed disk write is only logged: the metric is already in memory, so the
 // update itself succeeded and the next successful write will persist it.
-func (s *Snapshot) Update(metric *models.Metrics) error {
-	if err := s.store.Update(metric); err != nil {
+func (s *Snapshot) Update(ctx context.Context, metric *models.Metrics) error {
+	if err := s.store.Update(ctx, metric); err != nil {
+		return err
+	}
+
+	if err := s.persist(); err != nil {
+		s.log.Error("failed to persist metrics snapshot", zap.String("path", s.path), zap.Error(err))
+	}
+	return nil
+}
+
+// UpdateBatch stores all metrics and writes a single snapshot to disk, not one
+// per metric. Disk write failures are handled as in Update.
+func (s *Snapshot) UpdateBatch(ctx context.Context, metrics []models.Metrics) error {
+	if err := s.store.UpdateBatch(ctx, metrics); err != nil {
 		return err
 	}
 
@@ -101,7 +114,13 @@ func (s *Snapshot) persist() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return saveSnapshotToFile(s.path, s.store.Snapshot())
+	if err := saveSnapshotToFile(s.path, s.store.Snapshot()); err != nil {
+		return err
+	}
+
+	// Debug, not Info: with STORE_INTERVAL=0 this runs after every update.
+	s.log.Debug("persisted metrics snapshot", zap.String("path", s.path))
+	return nil
 }
 
 // snapshotFileMode keeps the permissions the snapshot had with os.WriteFile.

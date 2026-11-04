@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -28,10 +29,10 @@ const (
 var errMetricNotFound = errors.New("metric not found")
 
 type MetricReader interface {
-	GetGauge(name string) (float64, bool)
-	GetCounter(name string) (int64, bool)
-	ListGauges() map[string]float64
-	ListCounters() map[string]int64
+	GetGauge(ctx context.Context, name string) (float64, bool)
+	GetCounter(ctx context.Context, name string) (int64, bool)
+	ListGauges(ctx context.Context) map[string]float64
+	ListCounters(ctx context.Context) map[string]int64
 }
 
 func GetMetricValueJSONHandler(reader MetricReader, log *zap.Logger) http.HandlerFunc {
@@ -49,7 +50,8 @@ func GetMetricValueJSONHandler(reader MetricReader, log *zap.Logger) http.Handle
 			return
 		}
 
-		if err := validateMetricTypeRequest(&req, reader); err != nil {
+		ctx := r.Context()
+		if err := validateMetricTypeRequest(ctx, &req, reader); err != nil {
 			if errors.Is(err, errMetricNotFound) {
 				http.NotFound(w, r)
 				return
@@ -71,7 +73,7 @@ func GetMetricValueJSONHandler(reader MetricReader, log *zap.Logger) http.Handle
 	}
 }
 
-func validateMetricTypeRequest(req *models.Metrics, reader MetricReader) error {
+func validateMetricTypeRequest(ctx context.Context, req *models.Metrics, reader MetricReader) error {
 	if req.ID == "" {
 		return errMetricNameMissing
 	}
@@ -82,13 +84,13 @@ func validateMetricTypeRequest(req *models.Metrics, reader MetricReader) error {
 
 	switch req.MType {
 	case models.Gauge:
-		value, ok := reader.GetGauge(req.ID)
+		value, ok := reader.GetGauge(ctx, req.ID)
 		if !ok {
 			return errMetricNotFound
 		}
 		req.Value = &value
 	case models.Counter:
-		value, ok := reader.GetCounter(req.ID)
+		value, ok := reader.GetCounter(ctx, req.ID)
 		if !ok {
 			return errMetricNotFound
 		}
@@ -101,11 +103,12 @@ func validateMetricTypeRequest(req *models.Metrics, reader MetricReader) error {
 }
 
 func ListMetricsHandler(reader MetricReader) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(headerContentType, contentTypeHTML+"; charset=utf-8")
 
-		gauges := reader.ListGauges()
-		counters := reader.ListCounters()
+		ctx := r.Context()
+		gauges := reader.ListGauges(ctx)
+		counters := reader.ListCounters(ctx)
 
 		gaugeNames := make([]string, 0, len(gauges))
 		for name := range gauges {

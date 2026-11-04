@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -26,7 +28,7 @@ func TestUpdateMetricsHandler_SuccessGauge(t *testing.T) {
 	if body, _ := io.ReadAll(res.Body); string(body) != "OK" {
 		t.Fatalf("expected body OK, got %q", string(body))
 	}
-	if got, ok := store.GetGauge("Alloc"); !ok || got != 123.45 {
+	if got, ok := store.GetGauge(context.Background(), "Alloc"); !ok || got != 123.45 {
 		t.Fatalf("expected gauge Alloc=123.45, got %v (present=%v)", got, ok)
 	}
 }
@@ -40,7 +42,7 @@ func TestUpdateMetricsHandler_SuccessCounterAccumulate(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, res.Code)
 	}
-	if got, ok := store.GetCounter("PollCount"); !ok || got != 3 {
+	if got, ok := store.GetCounter(context.Background(), "PollCount"); !ok || got != 3 {
 		t.Fatalf("expected counter PollCount=3, got %v (present=%v)", got, ok)
 	}
 }
@@ -70,6 +72,33 @@ func TestUpdateMetricsHandler_Errors(t *testing.T) {
 
 			if res.Code != tt.wantStatus {
 				t.Fatalf("expected status %d, got %d", tt.wantStatus, res.Code)
+			}
+		})
+	}
+}
+
+func TestUpdateMetricsHandler_InvalidValueKeepsParseError(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   string
+		wantBody string
+	}{
+		{"gauge", "/update/gauge/Alloc/none", `metric "Alloc": invalid gauge value: strconv.ParseFloat: parsing "none": invalid syntax`},
+		{"counter", "/update/counter/PollCount/1.5", `metric "PollCount": invalid counter value: strconv.ParseInt: parsing "1.5": invalid syntax`},
+		{"unknown type", "/update/unknown/Alloc/1", `metric "Alloc": invalid metric type`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, _ := newTestHandler()
+
+			res := doURLRequest(h, http.MethodPost, tt.target)
+
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
+			}
+			if body, _ := io.ReadAll(res.Body); strings.TrimSpace(string(body)) != tt.wantBody {
+				t.Fatalf("expected body %q, got %q", tt.wantBody, strings.TrimSpace(string(body)))
 			}
 		})
 	}

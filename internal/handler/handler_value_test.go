@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -20,7 +21,7 @@ func postValueRequest(h http.Handler, metricID, metricType string) *httptest.Res
 func TestGetMetricValueJSONHandler_ReturnsGaugeValue(t *testing.T) {
 	h, store := newTestHandler()
 	g := 10.5
-	_ = store.Update(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
+	_ = store.Update(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
 
 	res := postValueRequest(h, "Alloc", models.Gauge)
 	if res.Code != http.StatusOK {
@@ -39,7 +40,7 @@ func TestGetMetricValueJSONHandler_ReturnsGaugeValue(t *testing.T) {
 func TestGetMetricValueJSONHandler_ReturnsCounterValue(t *testing.T) {
 	h, store := newTestHandler()
 	c := int64(3)
-	_ = store.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c})
+	_ = store.Update(context.Background(), &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c})
 
 	res := postValueRequest(h, "PollCount", models.Counter)
 	if res.Code != http.StatusOK {
@@ -121,8 +122,8 @@ func TestValidateMetricTypeRequest(t *testing.T) {
 	store := repository.NewMemStorage()
 	g := 1.5
 	c := int64(2)
-	_ = store.Update(&models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
-	_ = store.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c})
+	_ = store.Update(context.Background(), &models.Metrics{ID: "Alloc", MType: models.Gauge, Value: &g})
+	_ = store.Update(context.Background(), &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c})
 
 	tests := []struct {
 		name    string
@@ -168,7 +169,7 @@ func TestValidateMetricTypeRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateMetricTypeRequest(tt.req, store)
+			err := validateMetricTypeRequest(context.Background(), tt.req, store)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
 			}
@@ -177,7 +178,7 @@ func TestValidateMetricTypeRequest(t *testing.T) {
 
 	t.Run("valid gauge populates value", func(t *testing.T) {
 		req := &models.Metrics{ID: "Alloc", MType: models.Gauge}
-		if err := validateMetricTypeRequest(req, store); err != nil {
+		if err := validateMetricTypeRequest(context.Background(), req, store); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if req.Value == nil || *req.Value != 1.5 {
@@ -187,7 +188,7 @@ func TestValidateMetricTypeRequest(t *testing.T) {
 
 	t.Run("valid counter populates delta", func(t *testing.T) {
 		req := &models.Metrics{ID: "PollCount", MType: models.Counter}
-		if err := validateMetricTypeRequest(req, store); err != nil {
+		if err := validateMetricTypeRequest(context.Background(), req, store); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if req.Delta == nil || *req.Delta != 2 {
@@ -224,8 +225,8 @@ func TestListMetricsHandler(t *testing.T) {
 
 	g := 22.3
 	c := int64(5)
-	_ = store.Update(&models.Metrics{ID: "HeapAlloc", MType: models.Gauge, Value: &g})
-	_ = store.Update(&models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c})
+	_ = store.Update(context.Background(), &models.Metrics{ID: "HeapAlloc", MType: models.Gauge, Value: &g})
+	_ = store.Update(context.Background(), &models.Metrics{ID: "PollCount", MType: models.Counter, Delta: &c})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	res := httptest.NewRecorder()
