@@ -1,13 +1,20 @@
 package usecase
 
-import "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/repository"
+// MetricReadStore is what MetricRead needs from a storage. It is declared
+// here, next to its consumer, not in the repository package.
+type MetricReadStore interface {
+	GetGauge(name string) (float64, bool)
+	GetCounter(name string) (int64, bool)
+	ListGauges() map[string]float64
+	ListCounters() map[string]int64
+}
 
-func NewMetricRead(store repository.MetricReader) MetricRead {
+func NewMetricRead(store MetricReadStore) MetricRead {
 	return MetricRead{store: store}
 }
 
 type MetricRead struct {
-	store repository.MetricReader
+	store MetricReadStore
 }
 
 func (mr *MetricRead) GetGauge(name string) (float64, bool) {

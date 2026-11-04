@@ -5,11 +5,9 @@ const (
 	Gauge   = "gauge"
 )
 
-// NOTE: Не усложняем пример, вводя иерархическую вложенность структур.
-// Органичиваясь плоской моделью.
-// Delta и Value объявлены через указатели,
-// что бы отличать значение "0", от не заданного значения
-// и соответственно не кодировать в структуру.
+// Metrics — метрика в плоской модели, без иерархической вложенности структур.
+// Delta и Value объявлены через указатели, чтобы отличать значение "0"
+// от незаданного значения и не кодировать незаданное поле в JSON.
 type Metrics struct {
 	ID    string   `json:"id"`
 	MType string   `json:"type"`
@@ -17,3 +15,8 @@ type Metrics struct {
 	Value *float64 `json:"value,omitempty"`
 	Hash  string   `json:"hash,omitempty"`
 }
+
+// MetricsList — срез метрик для сериализации через easyjson (снапшот на диске).
+//
+//easyjson:json
+type MetricsList []Metrics
