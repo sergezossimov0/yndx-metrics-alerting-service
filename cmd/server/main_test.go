@@ -27,7 +27,7 @@ func unsetEnv(t *testing.T, key string) {
 
 func unsetAllServerEnv(t *testing.T) {
 	t.Helper()
-	for _, key := range []string{"ADDRESS", "STORE_INTERVAL", "FILE_STORAGE_PATH", "RESTORE", "DATABASE_DSN"} {
+	for _, key := range []string{"ADDRESS", "STORE_INTERVAL", "FILE_STORAGE_PATH", "RESTORE", "DATABASE_DSN", "KEY"} {
 		unsetEnv(t, key)
 	}
 }
@@ -39,6 +39,7 @@ type resolvedConfig struct {
 	fileStoragePath string
 	restore         bool
 	dbConnection    string
+	key             string
 }
 
 func resolved(c *serverConfig) resolvedConfig {
@@ -48,6 +49,7 @@ func resolved(c *serverConfig) resolvedConfig {
 		fileStoragePath: c.fileStoragePath,
 		restore:         c.restore,
 		dbConnection:    c.dbConnection,
+		key:             c.key,
 	}
 }
 
@@ -71,7 +73,8 @@ func TestResolveConfig_EnvVarsTakePrecedenceOverFlags(t *testing.T) {
 	t.Setenv("FILE_STORAGE_PATH", "/data/env-metrics.json")
 	t.Setenv("RESTORE", "false")
 	t.Setenv("DATABASE_DSN", "env-dsn")
-	withArgs(t, []string{"-a", "localhost:1234", "-i", "120", "-f", "/data/flag-metrics.json", "-r=true", "-d", "flag-dsn"})
+	t.Setenv("KEY", "env-key")
+	withArgs(t, []string{"-a", "localhost:1234", "-i", "120", "-f", "/data/flag-metrics.json", "-r=true", "-d", "flag-dsn", "-k", "flag-key"})
 
 	got, err := resolveConfig()
 	if err != nil {
@@ -83,6 +86,7 @@ func TestResolveConfig_EnvVarsTakePrecedenceOverFlags(t *testing.T) {
 		fileStoragePath: "/data/env-metrics.json",
 		restore:         false,
 		dbConnection:    "env-dsn",
+		key:             "env-key",
 	}
 	if !reflect.DeepEqual(resolved(got), want) {
 		t.Fatalf("expected %+v, got %+v", want, resolved(got))
@@ -125,7 +129,7 @@ func TestResolveConfig_FlagsAreParsedEvenWhenAllEnvSet(t *testing.T) {
 
 func TestResolveConfig_UsesFlagsWhenEnvNotSet(t *testing.T) {
 	unsetAllServerEnv(t)
-	withArgs(t, []string{"-a", "localhost:1234", "-i", "120", "-f", "/data/flag-metrics.json", "-r=false"})
+	withArgs(t, []string{"-a", "localhost:1234", "-i", "120", "-f", "/data/flag-metrics.json", "-r=false", "-k", "flag-key"})
 
 	got, err := resolveConfig()
 	if err != nil {
@@ -136,6 +140,7 @@ func TestResolveConfig_UsesFlagsWhenEnvNotSet(t *testing.T) {
 		storeInterval:   120 * time.Second,
 		fileStoragePath: "/data/flag-metrics.json",
 		restore:         false,
+		key:             "flag-key",
 	}
 	if !reflect.DeepEqual(resolved(got), want) {
 		t.Fatalf("expected %+v, got %+v", want, resolved(got))
@@ -143,12 +148,13 @@ func TestResolveConfig_UsesFlagsWhenEnvNotSet(t *testing.T) {
 }
 
 func TestResolveConfig_EmptyStringEnvVarsFallBackToFlags(t *testing.T) {
-	// declared but empty ADDRESS and FILE_STORAGE_PATH count as unset
+	// declared but empty ADDRESS, FILE_STORAGE_PATH and KEY count as unset
 	// and keep the flag values
 	unsetAllServerEnv(t)
 	t.Setenv("ADDRESS", "")
 	t.Setenv("FILE_STORAGE_PATH", "")
-	withArgs(t, []string{"-a", "localhost:1234", "-f", "/data/flag-metrics.json"})
+	t.Setenv("KEY", "")
+	withArgs(t, []string{"-a", "localhost:1234", "-f", "/data/flag-metrics.json", "-k", "flag-key"})
 
 	got, err := resolveConfig()
 	if err != nil {
@@ -159,6 +165,9 @@ func TestResolveConfig_EmptyStringEnvVarsFallBackToFlags(t *testing.T) {
 	}
 	if got.fileStoragePath != "/data/flag-metrics.json" {
 		t.Fatalf("expected fileStoragePath to fall back to flag value, got %q", got.fileStoragePath)
+	}
+	if got.key != "flag-key" {
+		t.Fatalf("expected key to fall back to flag value, got %q", got.key)
 	}
 }
 
