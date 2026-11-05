@@ -73,9 +73,14 @@ func newRouter(s *storage, signKey []byte, log *zap.Logger) http.Handler {
 	r := chi.NewRouter()
 
 	httpLog := log.With(zap.String("component", "http"))
-	// WithSignature goes after CompressionHandler: the signatures of both the
-	// request and the response cover the uncompressed body
-	r.Use(handler.WithLogging(httpLog), handler.CompressionHandler(httpLog), handler.WithSignature(signKey, httpLog))
+	mws := []func(http.Handler) http.Handler{handler.WithLogging(httpLog), handler.CompressionHandler(httpLog)}
+	// without a key there is nothing to check or sign, so the middleware is
+	// not added at all. It goes after CompressionHandler: the signatures of
+	// both the request and the response cover the uncompressed body
+	if len(signKey) > 0 {
+		mws = append(mws, handler.WithSignature(signKey, httpLog))
+	}
+	r.Use(mws...)
 
 	r.Post("/update/", handler.UpdateMetricsJSONHandler(&uc, httpLog))
 	r.Post("/updates/", handler.UpdateMetricsBatchJSONHandler(&uc, httpLog))

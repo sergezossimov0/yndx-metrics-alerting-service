@@ -4,16 +4,15 @@ import (
 	"bytes"
 	"io"
 	"net/http"
-	"sync"
 
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/signature"
 	"go.uber.org/zap"
 )
 
 // WithSignature returns a middleware that checks the HashSHA256 signature of
-// request bodies and signs every response body. An empty key disables both;
-// a signed request then means the server was most likely started without the
-// agent's key, so the first one is reported with a warning.
+// request bodies and signs every response body. key must not be empty: the
+// caller decides whether signing is on and adds the middleware only when a
+// key is set (see newRouter in cmd/server).
 //
 // It must run after CompressionHandler: the agent signs the uncompressed body,
 // so the signature is checked against the decompressed one, and the response
@@ -25,9 +24,6 @@ import (
 // handler, so its data is never stored.
 func WithSignature(key []byte, log *zap.Logger) func(http.Handler) http.Handler {
 	return func(h http.Handler) http.Handler {
-		if len(key) == 0 {
-			return warnUncheckedSignature(h, log)
-		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			sw := &signingWriter{ResponseWriter: w}
 			serveVerified(h, key, log, sw, r)
@@ -36,22 +32,6 @@ func WithSignature(key []byte, log *zap.Logger) func(http.Handler) http.Handler 
 			}
 		})
 	}
-}
-
-// warnUncheckedSignature passes every request to h unchanged and logs once
-// when one carries HashSHA256: the agent signs, but without a key the server
-// cannot check it. Once, because the agent reports every few seconds and a
-// warning per request would flood the log.
-func warnUncheckedSignature(h http.Handler, log *zap.Logger) http.Handler {
-	var once sync.Once
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(signature.Header) != "" {
-			once.Do(func() {
-				log.Warn("request carries " + signature.Header + ", but the server has no key: signatures are not checked")
-			})
-		}
-		h.ServeHTTP(w, r)
-	})
 }
 
 // serveVerified passes r to h if its signature is valid or absent,

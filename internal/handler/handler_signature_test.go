@@ -66,7 +66,7 @@ func TestWithSignature_RejectsInvalidSignature(t *testing.T) {
 	}{
 		{name: "other key", sig: signature.Sum([]byte(signedBody), []byte("other"))},
 		{name: "other body", sig: signature.Sum([]byte(`[]`), signKey)},
-		{name: "not hex", sig: "not-a-signature"},
+		{name: "not base64", sig: "not-a-signature"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -113,47 +113,6 @@ func TestWithSignature_PassesRequestWithoutSignatureUnchecked(t *testing.T) {
 	}
 	if inner.body != signedBody {
 		t.Fatalf("expected the handler to read the whole body %q, got %q", signedBody, inner.body)
-	}
-}
-
-func TestWithSignature_EmptyKeyDisablesCheck(t *testing.T) {
-	for _, key := range [][]byte{nil, []byte("")} {
-		inner := &recordingHandler{}
-		res := httptest.NewRecorder()
-
-		WithSignature(key, zap.NewNop())(inner).ServeHTTP(res, signedRequest(signedBody, "not-a-signature"))
-
-		if !inner.reached {
-			t.Fatalf("expected key %q to disable the check and pass the request through", key)
-		}
-	}
-}
-
-func TestWithSignature_EmptyKeyWarnsOnceAboutSignedRequests(t *testing.T) {
-	inner := &recordingHandler{}
-	core, logs := observer.New(zapcore.DebugLevel)
-	mw := WithSignature(nil, zap.New(core))(inner)
-
-	// an unsigned request is the normal case without a key: no warning
-	mw.ServeHTTP(httptest.NewRecorder(), signedRequest(signedBody, ""))
-	if n := logs.Len(); n != 0 {
-		t.Fatalf("expected no log entries for an unsigned request, got %d: %v", n, logs.All())
-	}
-
-	for range 3 {
-		inner.reached = false
-		mw.ServeHTTP(httptest.NewRecorder(), signedRequest(signedBody, signature.Sum([]byte(signedBody), signKey)))
-		if !inner.reached {
-			t.Fatal("expected a signed request to reach the handler when the server has no key")
-		}
-	}
-
-	entries := logs.All()
-	if len(entries) != 1 {
-		t.Fatalf("expected exactly one warning for three signed requests, got %d: %v", len(entries), entries)
-	}
-	if entries[0].Level != zapcore.WarnLevel {
-		t.Fatalf("expected a warning, got level %s", entries[0].Level)
 	}
 }
 
@@ -272,19 +231,6 @@ func TestWithSignature_SignsRejection(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, res.Code)
 	}
 	requireSignedResponse(t, res)
-}
-
-func TestWithSignature_EmptyKeyLeavesResponseUnsigned(t *testing.T) {
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("1.5"))
-	})
-	res := httptest.NewRecorder()
-
-	WithSignature(nil, zap.NewNop())(inner).ServeHTTP(res, signedRequest(signedBody, ""))
-
-	if sig := res.Header().Get(signature.Header); sig != "" {
-		t.Fatalf("expected no %s header without a key, got %q", signature.Header, sig)
-	}
 }
 
 // Behind CompressionHandler the response is signed before it is compressed,

@@ -49,14 +49,6 @@ func isRetriableSendError(err error) bool {
 	return ok
 }
 
-// sendMetricJSON posts a single metric to POST /update/.
-func (a *Agent) sendMetricJSON(ctx context.Context, body *models.Metrics) error {
-	if err := a.postGzipJSON(ctx, "/update/", body); err != nil {
-		return fmt.Errorf("%s %s: %w", body.MType, body.ID, err)
-	}
-	return nil
-}
-
 // sendBatchJSON posts all metrics in a single request to POST /updates/.
 func (a *Agent) sendBatchJSON(ctx context.Context, batch []models.Metrics) error {
 	if err := a.postGzipJSON(ctx, "/updates/", models.MetricsList(batch)); err != nil {

@@ -53,18 +53,11 @@ func (s *pollCountingStore) totalPolls() int {
 	return len(s.polls)
 }
 
-// decodeSentMetrics reads the metrics of one agent request: a single metric
-// posted to /update/ by the send workers, or a batch posted to /updates/ by
-// the final report.
+// decodeSentMetrics reads the batch of one agent request to /updates/.
 func decodeSentMetrics(r *http.Request) []models.Metrics {
-	if r.URL.Path == "/updates/" {
-		var batch []models.Metrics
-		_ = decodeGzipJSONBody(r, &batch)
-		return batch
-	}
-	var m models.Metrics
-	_ = decodeGzipJSONBody(r, &m)
-	return []models.Metrics{m}
+	var batch []models.Metrics
+	_ = decodeGzipJSONBody(r, &batch)
+	return batch
 }
 
 // Run with -race: polls and reports now run concurrently on the same store.
@@ -159,20 +152,35 @@ func TestAgent_Run_FinalReportIncludesLastPolls(t *testing.T) {
 	}
 }
 
-func TestAgent_Run_LimitsConcurrentRequests(t *testing.T) {
+// Every report is one batch, and the next snapshot is taken only after the
+// server has answered: however many workers there are, requests never
+// overlap. That is both within RATE_LIMIT and what keeps counter deltas from
+// being sent twice (see the invariant on metricStore).
+func TestAgent_Run_SendsOneBatchAtATimeWithinRateLimit(t *testing.T) {
 	const limit = 3
 	var (
 		inFlight    atomic.Int64
 		maxInFlight atomic.Int64
+		requests    atomic.Int64
 	)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Only the pool is limited. The final batch (/updates/) goes after the
+		// Only the periodic reports count. The final report goes after the
 		// pool has stopped, but it may still meet handlers of requests the
 		// client abandoned on cancel: time.Sleep below does not notice that.
-		if r.URL.Path != "/update/" {
+		//
+		// ctx.Err() is set before ctx.Done() is closed, and Run starts the
+		// final report only after its loops have seen Done, so the final
+		// request always finds ctx.Err() != nil here. (A flag cleared from
+		// context.AfterFunc would race: AfterFunc runs in its own goroutine.)
+		// A periodic request that reaches the server after cancel is skipped
+		// too, which can only lower the counts, never fail the test falsely.
+		if ctx.Err() != nil {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		requests.Add(1)
 		n := inFlight.Add(1)
 		defer inFlight.Add(-1)
 		for {
@@ -181,7 +189,8 @@ func TestAgent_Run_LimitsConcurrentRequests(t *testing.T) {
 				break
 			}
 		}
-		// hold the request so that the workers pile up on the server
+		// hold the request longer than reportInterval, so that a report which
+		// did not wait for the previous one would overlap it
 		time.Sleep(20 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -190,14 +199,55 @@ func TestAgent_Run_LimitsConcurrentRequests(t *testing.T) {
 	a := NewAgent(ts.URL, 5*time.Millisecond, 10*time.Millisecond, repository.NewMemStorage(), zap.NewNop(),
 		WithRateLimit(limit))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	a.Run(ctx)
+
+	if requests.Load() < 2 {
+		t.Fatalf("expected several periodic reports, got %d", requests.Load())
+	}
+	if got := maxInFlight.Load(); got != 1 {
+		t.Fatalf("expected reports to go one at a time with %d workers, got %d concurrent requests", limit, got)
+	}
+}
+
+// Every report carries the whole snapshot in one request to /updates/:
+// the agent never posts single metrics to /update/.
+func TestAgent_Run_SendsWholeSnapshotAsOneBatch(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		paths   []string
+		batches [][]models.Metrics
+	)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		batch := decodeSentMetrics(r)
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		batches = append(batches, batch)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	a := NewAgent(ts.URL, 5*time.Millisecond, 20*time.Millisecond, repository.NewMemStorage(), zap.NewNop(),
+		WithRateLimit(3))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	a.Run(ctx)
 
-	// ~29 metrics per report, so all workers are busy at once: exactly limit,
-	// not fewer (the pool works in parallel) and not more (the limit holds)
-	if got := maxInFlight.Load(); got != limit {
-		t.Fatalf("expected at most and at least %d concurrent requests, got %d", limit, got)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) < 2 {
+		t.Fatalf("expected several reports, got %d requests", len(paths))
+	}
+	for i, p := range paths {
+		if p != "/updates/" {
+			t.Fatalf("request %d: expected /updates/, got %s", i, p)
+		}
+		// runtime metrics alone are ~29, so a request with a handful of
+		// metrics would mean the snapshot was split
+		if n := len(batches[i]); n < 20 {
+			t.Fatalf("request %d: expected the whole snapshot in one batch, got %d metrics", i, n)
+		}
 	}
 }
 

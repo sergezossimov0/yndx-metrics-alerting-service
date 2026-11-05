@@ -10,6 +10,7 @@ require (
 	github.com/mailru/easyjson v0.9.2
 	github.com/shirou/gopsutil/v4 v4.26.9
 	go.uber.org/zap v1.28.0
+	golang.org/x/sync v0.23.0
 )
 
 require (
@@ -25,7 +26,6 @@ require (
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )

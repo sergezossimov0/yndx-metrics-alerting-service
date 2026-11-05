@@ -3,12 +3,12 @@ package agent
 import (
 	"context"
 	"net/http"
-	"sync"
 	"time"
 
 	models "github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/model"
 	"github.com/sergezossimov0/yndx-metrics-alerting-service.git/internal/retry"
 	"go.uber.org/zap"
+	"golang.org/x/sync/errgroup"
 )
 
 // shutdownFlushTimeout bounds the whole final report, not a single request.
@@ -26,10 +26,10 @@ const defaultRateLimit = 1
 // and both subtractions would drive the local counters negative.
 //
 // Today this holds because Run starts a single reportLoop, and reportViaPool
-// waits until the workers have handled every metric of its snapshot before
-// the loop can take the next one. The final flush runs only after that loop
-// has stopped. The workers send metrics of one snapshot in parallel, but each
-// metric once, so each counter delta is subtracted once.
+// hands the whole snapshot to the workers as one batch and waits for its
+// result before the loop can take the next one. So of the rateLimit workers
+// at most one is sending at any time. The final flush runs only after that
+// loop and the workers have stopped.
 // Adding a second reporter or a parallel flush requires versioning the batch
 // (e.g. subtract only deltas of a snapshot that was not yet acknowledged).
 type metricStore interface {
@@ -106,7 +106,10 @@ func NewAgent(serverAddr string, pollInterval, reportInterval time.Duration, sto
 // while a report is in flight.
 //
 // Reports are sent by a pool of rateLimit workers, started once for the whole
-// run, one metric per request.
+// run. Every report is one batch request to /updates/ with the whole
+// snapshot, and the next snapshot is taken only after the server has answered
+// (see the invariant on metricStore). So in practice one request is in flight
+// at a time, well within the limit.
 //
 // System metrics (gopsutil) are polled in a goroutine of their own, also every
 // pollInterval. They are not collected right away: the first CPU sample would
@@ -115,21 +118,47 @@ func (a *Agent) Run(ctx context.Context) {
 	// first immediate collection
 	a.collectOnce(ctx)
 
-	jobs := make(chan sendJob)
-	var workers sync.WaitGroup
+	// one slot per worker: a worker that has finished finds its next job
+	// waiting instead of idling until the sender gets to it
+	jobs := make(chan sendJob, a.rateLimit)
+	// Two groups because the shutdown order matters: the loops stop first, then
+	// jobs is closed (closing it earlier could make reportLoop send on a closed
+	// channel), then the workers, which stop on close(jobs), not on ctx.
+	var workers errgroup.Group
 	for range a.rateLimit {
-		workers.Go(func() { a.sendWorker(ctx, jobs) })
+		workers.Go(func() error {
+			a.sendWorker(ctx, jobs)
+			return nil
+		})
 	}
 
-	var wg sync.WaitGroup
-	wg.Go(func() { a.pollLoop(ctx, a.collectOnce) })
-	wg.Go(func() { a.pollLoop(ctx, a.collectSystemOnce) })
-	wg.Go(func() { a.reportLoop(ctx, jobs) })
-	wg.Wait()
+	// If a loop ever returns a fatal error, gctx stops the other loops too.
+	// For now they have none: failed polls and sends are logged and retried
+	// on the next tick, so the loops stop only when ctx is done.
+	loops, gctx := errgroup.WithContext(ctx)
+	loops.Go(func() error {
+		a.pollLoop(gctx, a.collectOnce)
+		return nil
+	})
+	loops.Go(func() error {
+		a.pollLoop(gctx, a.collectSystemOnce)
+		return nil
+	})
+	loops.Go(func() error {
+		a.reportLoop(gctx, jobs)
+		return nil
+	})
+	// Always nil today. Logged anyway, so that a fatal error added to a loop
+	// later is not swallowed: the agent would stop and say nothing about why.
+	if err := loops.Wait(); err != nil {
+		a.log.Error("agent loop failed", zap.Error(err))
+	}
 
-	// reportLoop has waited for every job it queued, so none is pending.
+	// reportLoop has waited for the result of every job it queued, so none is pending.
 	close(jobs)
-	workers.Wait()
+	// Always nil by design: a worker hands each send result to job.done
+	// (logged in report), never to the group.
+	_ = workers.Wait()
 
 	// Everything else has stopped, so the final report runs alone and includes
 	// the last poll. ctx is already done, hence a fresh context for it. It is a
@@ -154,8 +183,8 @@ func (a *Agent) pollLoop(ctx context.Context, collect func(context.Context)) {
 	}
 }
 
-// reportLoop hands collected metrics to the send workers every reportInterval
-// until ctx is cancelled. If a report with retries outlasts the interval, the
+// reportLoop hands a snapshot of the collected metrics to the send workers
+// every reportInterval until ctx is cancelled. If a report with retries outlasts the interval, the
 // next one starts right after it: ticks that arrive meanwhile are dropped by
 // the ticker, not queued.
 func (a *Agent) reportLoop(ctx context.Context, jobs chan<- sendJob) {
